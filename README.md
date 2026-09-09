@@ -32,45 +32,55 @@ Scorched needs **Python 3.9+** and **pygame 2**. Nothing else — no asset files
 no build step. The sounds are synthesised at start-up and the graphics are drawn
 in code.
 
+There is one setup script per platform. Both are safe to re-run — they verify
+rather than reinstall — and both finish by actually starting pygame and the
+game to prove the install works.
+
 ### Windows
 
+Double-click **`scripts\setup.bat`**, then **`scripts\play.bat`**.
+
+From a prompt, if you prefer:
+
 ```bat
-py -3 -m pip install pygame-ce
-py -3 -m scorched
+scripts\setup.bat
+scripts\play.bat
 ```
 
-Or double-click `scripts\play.bat`.
+`setup.bat` finds your Python (including via the `py` launcher), installs
+pygame, and falls back to a virtual environment in `.venv` if a system install
+is refused. It also recognises the Microsoft Store placeholder that pretends to
+be `python` and tells you to install a real one.
 
-### Raspberry Pi OS (Pi 400 and friends)
+### Raspberry Pi OS, other Linux, macOS
 
 ```bash
-./scripts/install-raspbian.sh
+./scripts/setup.sh
 ./scripts/play.sh
 ```
 
-The script prefers Debian's `python3-pygame`, because Raspberry Pi OS Bookworm
-marks the system Python as externally managed and plain `pip install` will
-refuse. If that package is missing it falls back to building a virtualenv.
+`setup.sh` picks whichever of the three sane approaches suits the machine:
 
-By hand, if you prefer:
+| Situation | What it does |
+| --- | --- |
+| pygame already installed | Nothing |
+| Debian / Raspberry Pi OS | `apt install python3-pygame` |
+| Anything else | A virtual environment in `./.venv` |
+
+The apt route matters on a Pi: it is the only option on **32-bit** Raspberry Pi
+OS, where no wheel exists, and it sidesteps Bookworm's PEP 668
+`externally-managed-environment` refusal entirely. Debian's pygame 2.1.2 is new
+enough.
+
+Force a particular approach with `--venv`, `--apt` or `--system`; see
+`./scripts/setup.sh --help`.
+
+### By hand
+
+The only dependency is pygame, so this is enough anywhere:
 
 ```bash
-sudo apt install python3-pygame       # 32-bit or 64-bit Raspberry Pi OS
-python3 -m scorched
-```
-
-On **64-bit** Raspberry Pi OS you can also use the newer pygame-ce, which ships
-an aarch64 wheel:
-
-```bash
-python3 -m venv .venv && ./.venv/bin/pip install pygame-ce
-./.venv/bin/python -m scorched
-```
-
-### Any other Linux, or macOS
-
-```bash
-python3 -m pip install pygame-ce
+python3 -m pip install pygame-ce      # or: sudo apt install python3-pygame
 python3 -m scorched
 ```
 
@@ -95,7 +105,9 @@ use `Connect by Address` and type what the host's lobby screen showed, e.g.
 
 The host needs **TCP port 27015** open, plus **UDP 27016** for the server
 browser. On Windows the first launch pops the usual firewall prompt — allow it
-on *Private networks*. On Raspberry Pi OS nothing is firewalled by default.
+on *Private networks*. To open the ports up front instead, run
+`scripts\setup.bat --firewall` from an Administrator prompt. On Raspberry Pi OS
+nothing is firewalled by default.
 
 ### Dedicated server
 
@@ -256,7 +268,7 @@ python -m scorched server [options]
 ## Development
 
 ```bash
-python3 -m pip install -e ".[dev]"
+./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
 python3 -m pytest          # 107 tests, ~50s
 python3 -m pyflakes scorched tests
 ```
@@ -298,9 +310,14 @@ returns to the lobby after the final round, or can press `Play Again`.
 detects this and runs silently rather than failing. `--no-sound` skips audio
 entirely.
 
-**`error: externally-managed-environment` on Raspberry Pi OS.** Use
-`sudo apt install python3-pygame`, or a virtualenv. `./scripts/install-raspbian.sh`
-handles both.
+**`error: externally-managed-environment` on Raspberry Pi OS.** That is
+Bookworm protecting the system Python. `./scripts/setup.sh` avoids it entirely —
+it uses apt where it can and a virtual environment otherwise.
+
+**Typing `python` on Windows opens the Microsoft Store.** That is a placeholder,
+not an install. Get the real thing from
+[python.org](https://www.python.org/downloads/) and tick *Add python.exe to
+PATH*. `scripts\setup.bat` detects this case and says so.
 
 **The window is tiny on a 4K display.** `F11`, or start with `--fullscreen`.
 
