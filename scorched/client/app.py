@@ -267,7 +267,7 @@ class App:
             self._merge_players(msg.get("players", []), soft=self.shot is not None)
             if state.phase == "buy" and self.mode != "shop":
                 self.mode = "shop"
-            elif state.phase in ("aim", "resolve") and self.mode not in ("game",):
+            elif state.phase in ("aim", "resolve") and self.mode not in ("game", "pause"):
                 self.mode = "game"
 
         elif kind == "aim":
@@ -346,8 +346,17 @@ class App:
             if existing is None:
                 self.state.players[pid] = dict(row)
                 continue
+            mine = pid == self.state.my_pid
             for key, value in row.items():
                 if soft and key in volatile:
+                    continue
+                if mine and key in ("angle", "power"):
+                    # My own barrel is driven by local input between "aim"
+                    # sends. The server's copy always lags live key-repeat by
+                    # at least one round trip, so applying it here would snap
+                    # the barrel backward mid-adjustment -- my own outgoing
+                    # "aim" messages are what keep the server in sync, not
+                    # this heartbeat.
                     continue
                 existing[key] = value
 
