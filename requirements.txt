@@ -1,0 +1,10 @@
+# The game needs exactly one third-party package.
+#
+# pygame-ce ships prebuilt wheels for Windows x86-64 and for Linux aarch64,
+# which covers a 64-bit Raspberry Pi OS on a Pi 400. On 32-bit Raspberry Pi OS
+# there is no wheel; install Debian's package instead and skip this file:
+#
+#     sudo apt install python3-pygame
+#
+# Stock pygame 2.1.2 (what Raspberry Pi OS ships) works fine too.
+pygame-ce>=2.1.2
