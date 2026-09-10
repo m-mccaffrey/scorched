@@ -136,11 +136,15 @@ class ReplayPlayer:
             if unit is None:
                 return
             self._motion[unit["uid"]] = ((unit["x"], unit["y"]), tile, beat)
+            self.view.turn_to(unit["uid"], tile[0] - unit["x"])
             unit["x"], unit["y"] = tile
             self._revealed.add(tile)
 
         elif kind == "shoot":
             shooter = self._ensure_unit(event["uid"], tuple(event["at"]))
+            if shooter is not None:
+                self.view.turn_to(shooter["uid"],
+                                  event["to"][0] - event["at"][0])
             colour = team_color(self.colors.get(
                 shooter["owner"] if shooter else 0, 0))
             self._tracers.append(Tracer(self._pos(tuple(event["at"])),

@@ -245,6 +245,29 @@ Three ship with the game: **Cross Duel** (1v1), **Crossroads** (tight
 four-way), and **Dry Basin** (four-way split by a river). Drop a new `.map`
 file in `standing_orders/maps/` and it appears in the lobby.
 
+### Sprites
+
+![Sprites](docs/orders-sprites.png)
+
+Units and buildings are pixel art written as **string art in
+`standing_orders/client/sprites.py`** — at twelve pixels a side a text grid is
+a more convenient tool than an image editor, and it keeps the game free of
+asset files:
+
+```python
+TROOPER = [
+    "....####....",
+    "...#2222#...",
+    "...#2117#...",
+    ...
+]
+```
+
+Each glyph is a *role* rather than a fixed colour — `1` team colour, `2`
+highlight, `#` team-tinted outline, `4` metal, `6` hot accent — so one drawing
+serves all eight team colours, and edits show up next run with no build step.
+Units mirror to face the way they last moved.
+
 ### Bots
 
 Four skill levels, from *Novice* to *Cyborg*. They play **under the same fog as

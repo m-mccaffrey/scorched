@@ -18,6 +18,9 @@ class WorldView:
         self.remembered: dict[int, dict] = {}
         self.supply: int = 0
         self.turn: int = 0
+        #: uid -> True when the unit is facing left. Kept outside the unit
+        #: dicts because those are rebuilt from scratch every state sync.
+        self.facing: dict[int, bool] = {}
 
     def apply_state(self, state: dict) -> None:
         fresh = {u["uid"]: dict(u) for u in state.get("units", [])}
@@ -40,6 +43,13 @@ class WorldView:
         for uid in [u for u, g in self.remembered.items()
                     if (g["x"], g["y"]) in self.visible]:
             del self.remembered[uid]
+
+    def face_left(self, uid: int) -> bool:
+        return self.facing.get(uid, False)
+
+    def turn_to(self, uid: int, dx: int) -> None:
+        if dx:
+            self.facing[uid] = dx < 0
 
     def mine(self, pid: int) -> list:
         return [u for u in self.units.values() if u["owner"] == pid]

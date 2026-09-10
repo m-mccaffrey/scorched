@@ -966,8 +966,10 @@ class App:
             self.renderer.draw_building(
                 self.screen, building, team_color(self.colors.get(building["owner"], 0)))
         for ghost in self.view.remembered.values():
-            self.renderer.draw_unit(self.screen, ghost,
-                                    shade(team_color(self.colors.get(ghost["owner"], 0)), 0.4))
+            self.renderer.draw_unit(
+                self.screen, ghost,
+                team_color(self.colors.get(ghost["owner"], 0)),
+                facing_left=self.view.face_left(ghost["uid"]), ghost=True)
 
     def _draw_entities_over_fog(self) -> None:
         """Live units draw above the shroud so a spotted enemy is never dimmed."""
@@ -975,7 +977,9 @@ class App:
             colour = team_color(self.colors.get(unit["owner"], 0))
             pos = self.replay.unit_pixel(unit) if self.replay else None
             self.renderer.draw_unit(self.screen, unit, colour,
-                                    selected=unit["uid"] in self.selected, pos=pos)
+                                    selected=unit["uid"] in self.selected,
+                                    pos=pos,
+                                    facing_left=self.view.face_left(unit["uid"]))
 
     def _draw_orders_overlay(self) -> None:
         board = self.renderer.board
