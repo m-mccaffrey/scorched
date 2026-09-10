@@ -225,7 +225,8 @@ Countering gives ×1.5 damage out and ×0.5 back. Gunners and Bruisers need a
 
 **Five structures**, all raised by an Engineer who has to walk there — there is
 no build radius, so forward depots and cheeky proxy towers are both on the
-table:
+table. Any Engineer can finish a site somebody else started; one left with
+nobody working it is outlined in red and marked with a `!`:
 
 | Structure | Cost | Build | HP | What it does |
 | --- | --- | --- | --- | --- |

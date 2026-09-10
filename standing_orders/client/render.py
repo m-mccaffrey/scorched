@@ -232,10 +232,18 @@ class Renderer:
         rect = self.board.rect((building["x"], building["y"]))
         if under:
             # Scaffolding, and the number of turns left, over a dimmed shell.
+            stalled = building.get("stalled")
             for line in range(2, TILE, 4):
                 dest.fill(shade(colour, 0.9), (x + 1, y + line, TILE - 2, 1))
             ui.draw_text(dest, str(under), rect.centerx, rect.centery - 4, 13,
-                         UI_ACCENT, anchor="center", shadow=True)
+                         UI_WARN if stalled else UI_ACCENT, anchor="center",
+                         shadow=True)
+            if stalled:
+                # Nobody is working here. Say so loudly: the supply is already
+                # spent and the tile is blocked until somebody finishes it.
+                pygame.draw.rect(dest, UI_WARN, rect, 1)
+                ui.draw_text(dest, "!", rect.right - 3, rect.y - 1, 15, UI_WARN,
+                             anchor="topright", shadow=True)
         else:
             self._hp_pip(dest, rect, building["hp"],
                          BUILDING[building["code"]].hp)

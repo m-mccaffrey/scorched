@@ -474,11 +474,10 @@ class Resolver:
             if not building.alive:
                 continue
             if building.building_turns > 0:
-                # Progress needs the Engineer who started it still alongside.
-                builder = self.state.units.get(building.builder_uid)
-                if (builder is None or not builder.alive
-                        or chebyshev(builder.tile, building.tile) > 1):
+                builder = self._site_worker(building)
+                if builder is None:
                     continue
+                building.builder_uid = builder.uid
                 building.building_turns -= 1
                 if building.building_turns == 0:
                     builder.job = None
@@ -549,6 +548,31 @@ class Resolver:
             self.occupancy[target] = ("building", building.bid)
             self.result.add(beat, "found", bid=building.bid, owner=unit.owner,
                             code=code, at=list(target), under=turns)
+
+    def _site_worker(self, building: Building):
+        """Any friendly Engineer standing next to an unfinished structure.
+
+        Tying progress to the *specific* Engineer that started it meant a
+        single new order to that unit orphaned the site permanently: the
+        supply was spent, the tile stayed blocked, and the build sat one turn
+        from done for the rest of the match with nothing able to adopt it. In
+        practice you hit that constantly, because the Engineer stays selected
+        after you place a structure. Anyone with a toolbox can finish the job.
+        """
+        original = self.state.units.get(building.builder_uid)
+        candidates = []
+        for unit in self.state.units.values():
+            if not unit.alive or not unit.builder:
+                continue
+            if not self.state.allied(unit.owner, building.owner):
+                continue
+            if chebyshev(unit.tile, building.tile) <= 1:
+                candidates.append(unit)
+        if not candidates:
+            return None
+        if original in candidates:
+            return original
+        return min(candidates, key=lambda u: u.uid)
 
     def _tick_research(self, beat: int, building: Building) -> None:
         building.project[1] -= 1

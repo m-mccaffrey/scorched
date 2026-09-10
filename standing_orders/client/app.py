@@ -747,6 +747,10 @@ class App:
                          + abs(u["y"] - tile[1]))
         self.queued.append({"o": "build", "uid": chosen["uid"], "code": code,
                             "to": list(tile)})
+        # Drop that Engineer from the selection. It stays selected otherwise,
+        # and the next right-click -- repositioning, or a select-all army move
+        # -- would silently cancel the build you just paid for.
+        self.selected.discard(chosen["uid"])
         self.sfx.play("order")
         self.ready_sent = False
 
@@ -1114,6 +1118,10 @@ class App:
             if building.get("under"):
                 lines.append((f"Under construction: {building['under']} turns",
                               UI_ACCENT, 14))
+                if building.get("stalled"):
+                    lines.append(("No Engineer working here", UI_WARN, 14))
+                    lines.append(("Send any Engineer alongside to finish it",
+                                  UI_DIM, 13))
             else:
                 lines.append((f"{building['hp']}/{info.hp} hp", UI_TEXT, 14))
                 if info.produces:
@@ -1206,6 +1214,9 @@ class App:
         if job:
             ui.draw_text(self.screen, f"building a {BUILDING[job[2]].name}",
                          x, y, 13, UI_GOOD)
+            ui.draw_text(self.screen, "a move order cancels it", x, y + 12, 12,
+                         UI_DIM)
+            y += 12
         else:
             ui.draw_text(self.screen, "click a structure, then a tile", x, y,
                          13, UI_DIM)

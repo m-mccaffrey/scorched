@@ -628,3 +628,67 @@ def test_research_respects_prerequisites():
     _result, rejected = resolve_turn(state, {
         0: [{"o": "research", "bid": base.bid, "code": "armour2"}]})
     assert rejected[0] and "not available" in rejected[0][0]
+
+
+def start_a_depot(state, builder, site=(9, 5)):
+    """Order a depot and resolve until the foundations exist but it is not
+    finished, so a test can interfere at exactly the interesting moment."""
+    state.players[0].supply = 60
+    resolve_turn(state, {0: [{"o": "build", "uid": builder.uid,
+                              "code": "depot", "to": list(site)}]})
+    for _ in range(10):
+        found = [b for b in state.buildings.values() if b.code == "depot"]
+        if found and found[0].building_turns > 0:
+            return found[0]
+        resolve_turn(state, {})
+    raise AssertionError("the depot never got started")
+
+
+def test_any_engineer_can_finish_an_abandoned_site():
+    """A new order to the builder must not orphan the structure forever.
+
+    Tying progress to the specific Engineer that started it left the site one
+    turn from done for the rest of the match: supply spent, tile blocked,
+    nothing able to adopt it -- and you hit it constantly, because the
+    Engineer stays selected after you place a structure.
+    """
+    state = arena(width=24)
+    builder = state.add_unit(0, "worker", 5, 5)
+    site = start_a_depot(state, builder)
+
+    # Send the builder away: the site stalls, and says so.
+    resolve_turn(state, {0: [{"o": "move", "uid": builder.uid, "to": [5, 9]}]})
+    stuck = site.building_turns
+    for _ in range(4):
+        resolve_turn(state, {})
+    assert site.building_turns == stuck
+    assert state.site_is_stalled(site)
+
+    # Any other Engineer picks up the work.
+    relief = state.add_unit(0, "worker", 9, 6)
+    resolve_turn(state, {})
+    assert site.building_turns < stuck
+    assert not state.site_is_stalled(site)
+    assert site.builder_uid == relief.uid
+
+
+def test_sending_the_original_engineer_back_resumes_the_build():
+    state = arena(width=24)
+    builder = state.add_unit(0, "worker", 5, 5)
+    site = start_a_depot(state, builder)
+    resolve_turn(state, {0: [{"o": "move", "uid": builder.uid, "to": [5, 9]}]})
+    resolve_turn(state, {0: [{"o": "move", "uid": builder.uid, "to": [8, 5]}]})
+    for _ in range(6):
+        resolve_turn(state, {})
+    assert site.operational
+
+
+def test_an_enemy_engineer_cannot_finish_your_building():
+    state = arena(width=24)
+    builder = state.add_unit(0, "worker", 5, 5)
+    site = start_a_depot(state, builder)
+    resolve_turn(state, {0: [{"o": "move", "uid": builder.uid, "to": [1, 9]}]})
+    state.add_unit(1, "worker", 9, 6)
+    stuck = site.building_turns
+    resolve_turn(state, {})
+    assert site.building_turns == stuck

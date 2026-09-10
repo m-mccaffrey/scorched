@@ -118,7 +118,10 @@ def visible_state(state, viewer_pid: int, vision: frozenset) -> dict:
         if not building.alive:
             continue
         if state.team_of(building.owner) == team or building.tile in vision:
-            buildings.append(building.to_wire())
+            wire = building.to_wire()
+            if state.team_of(building.owner) == team:
+                wire["stalled"] = state.site_is_stalled(building)
+            buildings.append(wire)
     return {
         "turn": state.turn,
         "nodes": [[list(t), o] for t, o in sorted(state.node_owner.items())],

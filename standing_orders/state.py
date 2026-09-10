@@ -220,6 +220,16 @@ class MatchState:
                      if b.owner == pid and b.alive)
         return alive + queued
 
+    def site_is_stalled(self, building) -> bool:
+        """An unfinished structure with no friendly Engineer beside it."""
+        if building.building_turns <= 0:
+            return False
+        from .grid import chebyshev
+        return not any(
+            u.alive and u.builder and self.allied(u.owner, building.owner)
+            and chebyshev(u.tile, building.tile) <= 1
+            for u in self.units.values())
+
     def receivers_of(self, pid: int) -> list:
         """Structures able to receive a worker's transmissions."""
         return [b for b in self.buildings.values()
