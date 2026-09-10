@@ -3,7 +3,7 @@ import random
 from standing_orders.ai import SKILLS, BotBrain
 from standing_orders.game import (PHASE_ORDERS, PHASE_OVER, PHASE_RESOLVE,
                                   Match, Settings, available_maps, load_map)
-from standing_orders.units import UNIT_CAP
+from standing_orders.units import UNIT
 
 
 def started(players=2, **kwargs):
@@ -24,7 +24,7 @@ def test_match_setup_gives_everyone_a_base_and_an_opening_force():
     match = started(2)
     for player in match.state.players.values():
         assert match.state.has_base(player.pid)
-        assert len(match.state.units_of(player.pid)) == 2
+        assert len(match.state.units_of(player.pid)) == 4
         assert player.supply == match.settings.start_supply
     assert match.phase == PHASE_ORDERS
 
@@ -164,6 +164,16 @@ def test_every_shipped_map_can_host_a_match():
 
 # -- bots ------------------------------------------------------------------
 
+def test_a_match_opens_with_engineers():
+    """The economy cannot start without them, so nobody should have to build
+    one before they can do anything at all."""
+    match = started(2)
+    for player in match.state.players.values():
+        workers = [u for u in match.state.units_of(player.pid)
+                   if UNIT[u.code].builder]
+        assert len(workers) >= 2
+
+
 def test_every_skill_produces_orders_the_rules_accept():
     for skill in SKILLS:
         match = started(2)
@@ -178,10 +188,21 @@ def test_unknown_skill_degrades_to_moderate():
     assert BotBrain("wizard").skill == "moderate"
 
 
+def test_skill_covers_economy_as_well_as_fighting():
+    """Difficulty that only changed how a bot fought stopped meaning anything
+    once the economy existed."""
+    from standing_orders.ai import SKILLS
+    novice, veteran = SKILLS["novice"], SKILLS["veteran"]
+    assert veteran.workers > novice.workers
+    assert veteran.barracks > novice.barracks
+    assert veteran.researches and not novice.researches
+    assert veteran.expands and not novice.expands
+
+
 def test_bots_respect_the_army_cap():
     match = started(2)
     match.state.players[0].supply = 999
-    for i in range(UNIT_CAP):
+    for i in range(match.state.army_cap_of(0)):
         match.state.add_unit(0, "scout", 2 + i % 10, 6)
     orders = BotBrain("veteran", random.Random(2)).plan(match, match.state.players[0])
     assert not [o for o in orders if o["o"] == "train"]
@@ -200,13 +221,19 @@ def test_bots_only_act_on_what_they_can_see():
 
 
 def test_a_bot_match_reaches_a_winner():
+    """A mismatched pair, which is what any real game is.
+
+    Two bots of the *same* skill run identical economies and grind for a very
+    long time -- symmetric AI does that in any RTS. The interesting property
+    is that a difference in skill converts into a win, and quickly.
+    """
     match = Match(Settings(map_name="duel"))
-    for name in ("Ada", "Grace"):
-        match.add_player(name, bot=True, skill="veteran")
+    match.add_player("Ada", bot=True, skill="veteran")
+    match.add_player("Grace", bot=True, skill="novice")
     match.start_match()
-    brains = {p.pid: BotBrain("veteran", random.Random(p.pid))
+    brains = {p.pid: BotBrain(p.skill, random.Random(p.pid))
               for p in match.state.players.values()}
-    for _ in range(150):
+    for _ in range(200):
         if match.phase == PHASE_OVER:
             break
         for player in list(match.state.players.values()):
@@ -216,4 +243,5 @@ def test_a_bot_match_reaches_a_winner():
         if not match.begin_orders():
             break
     assert match.phase == PHASE_OVER
-    assert match.winner_team is not None
+    assert match.winner_team == match.state.players[0].team, \
+        "the better bot should win"

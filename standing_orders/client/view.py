@@ -17,6 +17,8 @@ class WorldView:
         #: you are not made to re-scout ground you already scouted.
         self.remembered: dict[int, dict] = {}
         self.supply: int = 0
+        self.cap: int = 0
+        self.army: int = 0
         self.turn: int = 0
         #: uid -> True when the unit is facing left. Kept outside the unit
         #: dicts because those are rebuilt from scratch every state sync.
@@ -38,6 +40,8 @@ class WorldView:
         self.visible = {tuple(t) for t in state.get("vision", [])}
         self.explored |= self.visible
         self.supply = state.get("supply", self.supply)
+        self.cap = state.get("cap", self.cap)
+        self.army = state.get("army", self.army)
         self.turn = state.get("turn", self.turn)
         # A remembered unit standing on ground we can now see is simply gone.
         for uid in [u for u, g in self.remembered.items()

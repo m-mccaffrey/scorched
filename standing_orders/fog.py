@@ -127,4 +127,6 @@ def visible_state(state, viewer_pid: int, vision: frozenset) -> dict:
         "vision": sorted(vision),
         "players": [p.to_wire() for p in state.players.values()],
         "supply": state.players[viewer_pid].supply if viewer_pid in state.players else 0,
+        "cap": state.army_cap_of(viewer_pid),
+        "army": state.army_size(viewer_pid),
     }

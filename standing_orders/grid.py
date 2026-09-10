@@ -72,7 +72,8 @@ class MapInfo:
 class TileMap:
     """A rectangular grid of terrain, plus spawn points and resource nodes."""
 
-    __slots__ = ("width", "height", "tiles", "spawns", "nodes", "info")
+    __slots__ = ("width", "height", "tiles", "spawns", "nodes", "node_set",
+                 "info")
 
     def __init__(self, tiles: list[str], spawns: dict[int, tuple[int, int]],
                  nodes: list[tuple[int, int]], info: MapInfo) -> None:
@@ -81,6 +82,9 @@ class TileMap:
         self.width = len(tiles[0]) if tiles else 0
         self.spawns = spawns
         self.nodes = nodes
+        #: The same tiles as a set. One source of truth for "is this a node",
+        #: so capture and harvesting can never disagree about it.
+        self.node_set = set(nodes)
         self.info = info
 
     # -- queries -----------------------------------------------------------
@@ -102,7 +106,7 @@ class TileMap:
         return COST_FOREST if self.at(x, y) == FOREST else COST_OPEN
 
     def is_node(self, x: int, y: int) -> bool:
-        return self.at(x, y) == NODE
+        return (x, y) in self.node_set
 
     # -- loading -----------------------------------------------------------
     @classmethod

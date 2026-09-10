@@ -124,7 +124,9 @@ def test_each_player_gets_their_own_fogged_timeline(server):
     pump([a, b], 0.8)
     assert a.view is not None and b.view is not None
     # Opening positions are far apart, so neither sees the other's army.
-    assert len(a.view["units"]) == 2 and len(b.view["units"]) == 2
+    opening = len(a.view["units"])
+    assert opening >= 2 and len(b.view["units"]) == opening
+    assert all(u["owner"] == a.pid for u in a.view["units"])
 
     a.send(t="orders", orders=[])
     b.send(t="orders", orders=[])

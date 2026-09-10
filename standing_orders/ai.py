@@ -14,17 +14,37 @@ comes home when its base is threatened.
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass
 
 from .fog import VisionCache, team_vision
 from .grid import chebyshev, manhattan
-from .units import BUILD_RADIUS, BUILDING, UNIT, UNIT_CAP
+from .units import (HARVEST_RADIUS, UNIT, available_research,
+                    cost_of_building)
 
-#: (army size before attacking, chance of counter-picking, defends base?)
+@dataclass(frozen=True)
+class Skill:
+    """How competent a bot is, across every part of the game.
+
+    Difficulty used to vary only in how a bot fought. Once the economy
+    arrived, that stopped meaning anything: every level ran the same build,
+    so outcomes converged on a coin flip and a Veteran beat a Novice barely
+    more than half the time. Skill now covers economy as well, which is where
+    RTS matches are actually decided.
+    """
+    mass_at: int          # fighters gathered before committing to an attack
+    counter_pick: float   # chance of answering what the enemy actually fields
+    defends: bool         # comes home when the base is threatened
+    workers: int          # Engineers it will put to work
+    researches: bool      # spends surplus on upgrades
+    barracks: int         # production lines it will run at once
+    expands: bool         # builds forward depots to grow its cap
+
+
 SKILLS = {
-    "novice": (2, 0.0, False),
-    "moderate": (4, 0.4, True),
-    "veteran": (6, 0.85, True),
-    "cyborg": (7, 1.0, True),
+    "novice": Skill(2, 0.0, False, 1, False, 1, False),
+    "moderate": Skill(4, 0.4, True, 2, True, 2, True),
+    "veteran": Skill(6, 0.85, True, 3, True, 3, True),
+    "cyborg": Skill(7, 1.0, True, 4, True, 3, True),
 }
 SKILL_ORDER = ("novice", "moderate", "veteran", "cyborg")
 
@@ -32,11 +52,27 @@ SKILL_ORDER = ("novice", "moderate", "veteran", "cyborg")
 #: not bankrupt itself into having no army at all.
 BARRACKS_BUFFER = 2
 
+#: Surplus that makes a bot want another production line. One Barracks tops
+#: out at roughly a unit a turn, which is exactly the rate an army bleeds at
+#: the front -- so a single line is a permanent stalemate however good the
+#: economy behind it.
+EXPAND_SURPLUS = 26
+
+#: Only start a research project with this much supply to spare, so teching
+#: never comes at the price of an army.
+RESEARCH_BUFFER = 20
+
 DEFEND_RADIUS = 7
 
 #: How much stronger than the visible enemy force a bot wants to be before it
 #: stops trading in the middle and marches on a Command Post.
 PRESS_ADVANTAGE = 1.35
+
+#: Fighters this close to the spearhead count as "with the army". Without a
+#: rally step the bot feeds reinforcements to the front one at a time, where
+#: they lose every fight three-to-one; a tighter army cap used to hide this by
+#: keeping everyone bunched together.
+RALLY_RADIUS = 5
 
 #: A threat must be at least this costly, and this large a share of our own
 #: army, before it is worth pulling troops off an attack.
@@ -66,34 +102,139 @@ class BotBrain:
                            and b.tile in vision]
 
         orders: list = []
-        orders += self._economy(match, me, my_buildings, enemies)
+        # Put Engineers on nodes they can already work *before* spending them
+        # on construction. Doing it the other way round sends the whole labour
+        # force off to build a distant depot while a node beside the Command
+        # Post sits idle.
+        worker_orders, busy = self._workers(match, me, my_units)
+        orders += worker_orders
+        orders += self._economy(match, me, my_buildings, my_units, enemies, busy)
         orders += self._army(match, me, my_units, my_buildings, enemies,
                              enemy_buildings, vision)
         return orders
 
-    # -- production --------------------------------------------------------
-    def _economy(self, match, me, my_buildings, enemies) -> list:
+    # -- engineers ---------------------------------------------------------
+    def _workers(self, match, me, my_units) -> tuple:
+        """Park idle Engineers on nodes a depot can actually reach.
+
+        Returns the orders and the set of Engineers now spoken for, so the
+        economy does not hand the same worker a building job as well.
+        """
         state = match.state
-        orders = []
+        receivers = state.receivers_of(me.pid)
+        orders: list = []
+        busy: set = set()
+        taken = {(u.x, u.y) for u in my_units if u.builder}
+        for worker in [u for u in my_units if u.builder]:
+            if worker.job is not None:
+                busy.add(worker.uid)
+                continue
+            if state.map.is_node(worker.x, worker.y) and any(
+                    chebyshev(worker.tile, r.tile) <= HARVEST_RADIUS
+                    for r in receivers):
+                busy.add(worker.uid)           # already earning; leave it be
+                continue
+            node = self._workable_node(state, me, worker, receivers, taken)
+            if node is not None:
+                taken.add(node)
+                busy.add(worker.uid)
+                orders.append({"o": "move", "uid": worker.uid, "to": list(node)})
+        return orders, busy
+
+    def _workable_node(self, state, me, worker, receivers, taken):
+        best = None
+        for node in state.map.nodes:
+            if node in taken:
+                continue
+            owner = state.node_owner.get(node)
+            if owner is not None and not state.allied(owner, me.pid):
+                continue
+            if not any(chebyshev(node, r.tile) <= HARVEST_RADIUS
+                       for r in receivers):
+                continue
+            distance = manhattan(node, worker.tile)
+            if best is None or distance < best[0]:
+                best = (distance, node)
+        return best[1] if best else None
+
+    # -- production --------------------------------------------------------
+    def _economy(self, match, me, my_buildings, my_units, enemies,
+                 busy=frozenset()) -> list:
+        state = match.state
+        orders: list = []
         budget = me.supply
         bases = [b for b in my_buildings if b.code == "base" and b.operational]
         barracks = [b for b in my_buildings if b.code == "barracks"]
+        depots = [b for b in my_buildings if b.code == "depot"]
+        workers = [u for u in my_units if u.builder]
+        receivers = state.receivers_of(me.pid)
+        # An Engineer standing on a live node is earning its keep; pulling it
+        # off to go and build something is how a bot starves itself.
+        earning = {u.uid for u in workers
+                   if state.map.is_node(u.x, u.y)
+                   and any(chebyshev(u.tile, r.tile) <= HARVEST_RADIUS
+                           for r in receivers)}
+        idle_workers = [u for u in workers
+                        if u.job is None and u.uid not in earning
+                        and u.uid not in busy]
         if not bases:
             return orders
 
-        # A Barracks is the gate to the whole counter triangle, so build one
-        # as soon as it will not leave us defenceless.
-        barracks_cost = BUILDING["barracks"].cost
-        if not barracks and budget >= barracks_cost + BARRACKS_BUFFER:
-            site = self._build_site(state, me, bases[0])
-            if site is not None:
-                orders.append({"o": "build", "bid": bases[0].bid,
-                               "code": "barracks", "to": list(site)})
-                budget -= barracks_cost
+        # 1. A depot wherever we are working, or want to work, a node. Without
+        #    one in range the Engineer standing on the node sends nothing.
+        for worker in (list(idle_workers) if SKILLS[self.skill].expands else []):
+            node = self._node_needing_depot(state, me, worker, depots + bases)
+            price = cost_of_building("depot", me.research)
+            if node is None or budget < price:
+                continue
+            site = self._site_near(state, node)
+            if site is None:
+                continue
+            orders.append({"o": "build", "uid": worker.uid, "code": "depot",
+                           "to": list(site)})
+            idle_workers.remove(worker)
+            budget -= price
+            depots = depots + [None]           # counts toward the cap estimate
+            break
 
-        room = UNIT_CAP - (len(state.units_of(me.pid))
-                           + sum(len(b.queue) for b in my_buildings))
-        wanted = self._next_unit(state, me, barracks, enemies)
+        # 2. Barracks: the gate to the counter triangle -- but only once the
+        #    economy is running. Opening with a Barracks instead of a depot
+        #    leaves a bot on one supply a turn for the rest of the match.
+        price = cost_of_building("barracks", me.research)
+        if (not barracks and idle_workers and depots
+                and budget >= price + BARRACKS_BUFFER):
+            site = self._site_near(state, bases[0].tile, radius=4)
+            if site is not None:
+                worker = idle_workers.pop(0)
+                orders.append({"o": "build", "uid": worker.uid,
+                               "code": "barracks", "to": list(site)})
+                budget -= price
+
+        # 3. More production once the economy outruns one Barracks.
+        price = cost_of_building("barracks", me.research)
+        if (barracks and len(barracks) < SKILLS[self.skill].barracks
+                and idle_workers and budget >= price + EXPAND_SURPLUS):
+            site = self._site_near(state, bases[0].tile, radius=5)
+            if site is not None:
+                worker = idle_workers.pop(0)
+                orders.append({"o": "build", "uid": worker.uid,
+                               "code": "barracks", "to": list(site)})
+                budget -= price
+
+        # 4. Research, once there is money doing nothing useful.
+        if (SKILLS[self.skill].researches and bases[0].project is None
+                and budget >= RESEARCH_BUFFER):
+            options = available_research(me.research)
+            affordable = [r for r in options if r.cost <= budget - BARRACKS_BUFFER]
+            if affordable:
+                pick = self.rng.choice(affordable)
+                orders.append({"o": "research", "bid": bases[0].bid,
+                               "code": pick.code})
+                budget -= pick.cost
+
+        # 5. Recruit, respecting the cap the depots actually support.
+        room = state.army_cap_of(me.pid) - state.army_size(me.pid)
+        wanted = self._next_unit(state, me, barracks, workers, enemies)
         for _ in range(min(3, max(0, room))):
             if wanted is None:
                 break
@@ -105,8 +246,41 @@ class BotBrain:
                 break
             orders.append({"o": "train", "bid": source.bid, "code": wanted})
             budget -= unit_type.cost
-            wanted = self._next_unit(state, me, barracks, enemies)
+            workers = workers + ([None] if wanted == "worker" else [])
+            wanted = self._next_unit(state, me, barracks, workers, enemies)
         return orders
+
+    def _node_needing_depot(self, state, me, worker, receivers):
+        """A node worth putting a depot beside: ours, or free, and out of range."""
+        best = None
+        for node in state.map.nodes:
+            owner = state.node_owner.get(node)
+            if owner is not None and not state.allied(owner, me.pid):
+                continue
+            if any(r is not None and chebyshev(node, r.tile) <= HARVEST_RADIUS
+                   for r in receivers):
+                continue
+            distance = manhattan(node, worker.tile)
+            if best is None or distance < best[0]:
+                best = (distance, node)
+        return best[1] if best else None
+
+    def _site_near(self, state, origin, radius: int = 3):
+        """A free, buildable tile close to somewhere."""
+        occupied = set(state.occupancy())
+        candidates = []
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                tile = (origin[0] + dx, origin[1] + dy)
+                if not state.map.passable(*tile) or state.map.is_node(*tile):
+                    continue
+                if tile in occupied or chebyshev(tile, origin) < 1:
+                    continue
+                candidates.append(tile)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: (chebyshev(t, origin), t))
+        return candidates[0]
 
     def _producer(self, my_buildings, code: str):
         needed = UNIT[code].built_at
@@ -115,10 +289,18 @@ class BotBrain:
         options.sort(key=lambda b: (len(b.queue), b.bid))
         return options[0] if options else None
 
-    def _next_unit(self, state, me, barracks, enemies) -> str | None:
+    def _next_unit(self, state, me, barracks, workers, enemies) -> str | None:
         """Pick the next thing to build, counter-picking when skilled enough."""
-        _, counter_chance, _ = SKILLS[self.skill]
-        have_barracks = any(b.operational for b in barracks)
+        counter_chance = SKILLS[self.skill].counter_pick
+        have_barracks = any(b is not None and b.operational for b in barracks)
+
+        # Engineers first: no economy without them, and the army cap cannot
+        # grow until somebody is free to raise a depot.
+        wanted = SKILLS[self.skill].workers
+        if len(state.receivers_of(me.pid)) > 2:
+            wanted += 1
+        if len(workers) < wanted:
+            return "worker"
 
         if have_barracks and enemies and self.rng.random() < counter_chance:
             # Answer whatever the enemy has most of.
@@ -138,34 +320,17 @@ class BotBrain:
             weights = [4, 2]
         return self.rng.choices(pool, weights=weights, k=1)[0]
 
-    def _build_site(self, state, me, base):
-        """A free tile near the base, biased away from the map edge."""
-        candidates = []
-        for dy in range(-BUILD_RADIUS, BUILD_RADIUS + 1):
-            for dx in range(-BUILD_RADIUS, BUILD_RADIUS + 1):
-                tile = (base.x + dx, base.y + dy)
-                if not state.map.passable(*tile) or state.map.is_node(*tile):
-                    continue
-                if chebyshev(tile, base.tile) < 2:
-                    continue
-                if tile in state.occupancy():
-                    continue
-                candidates.append(tile)
-        if not candidates:
-            return None
-        candidates.sort(key=lambda t: (chebyshev(t, base.tile), t))
-        return candidates[0]
-
     # -- army --------------------------------------------------------------
     def _army(self, match, me, my_units, my_buildings, enemies,
               enemy_buildings, vision) -> list:
         state = match.state
-        mass_at, _, defends = SKILLS[self.skill]
+        skill = SKILLS[self.skill]
+        mass_at, defends = skill.mass_at, skill.defends
         orders = []
 
         bases = [b for b in my_buildings if b.code == "base"]
         home = bases[0].tile if bases else None
-        fighters = [u for u in my_units if u.code != "scout"]
+        fighters = [u for u in my_units if u.code not in ("scout", "worker")]
         scouts = [u for u in my_units if u.code == "scout"]
 
         # 1. Home defence, but proportionate. Recalling the whole army every
@@ -192,13 +357,20 @@ class BotBrain:
         if attackers:
             mine = sum(UNIT[u.code].cost for u in attackers)
             theirs = sum(UNIT[e.code].cost for e in enemies if e.code in UNIT)
-            # Attack when ahead -- or when the army is as big as it will ever
-            # get. At the cap, waiting buys nothing and hands the initiative
-            # away, which is exactly why human RTS players push at max supply.
-            at_cap = len(my_units) >= UNIT_CAP - 2
-            pressing = (not enemies) or at_cap or mine >= theirs * PRESS_ADVANTAGE
+            # Attack when ahead, or when the army is as big as it will ever
+            # get -- at the cap, waiting buys nothing and hands the initiative
+            # away, which is why human RTS players push at max supply.
+            #
+            # Seeing no enemy is emphatically *not* evidence of advantage.
+            # Treating it as one made the bot all-in on the enemy base every
+            # single turn from behind fog, so it never expanded, never
+            # out-economied anybody, and simply fed its army in forever.
+            spare = state.army_cap_of(me.pid) - state.army_size(me.pid)
+            at_cap = spare <= 2
+            pressing = at_cap or (bool(enemies)
+                                  and mine >= theirs * PRESS_ADVANTAGE)
 
-            if len(attackers) >= mass_at or at_cap:
+            if pressing and (len(attackers) >= mass_at or at_cap):
                 if pressing:
                     # Finish somebody off rather than spreading damage around.
                     # In a four-way game especially, knocking one commander out
@@ -213,8 +385,20 @@ class BotBrain:
                     target = self._enemy_spawn(match, me)
 
         if target is not None:
-            for unit in attackers:
-                orders.append({"o": "attack", "uid": unit.uid, "to": list(target)})
+            # Gather before committing. The spearhead -- whoever is closest to
+            # the objective -- holds while the rest close up, and the whole
+            # force moves off together once it is worth moving.
+            anchor = min(attackers, key=lambda u: manhattan(u.tile, target))
+            grouped = [u for u in attackers
+                       if manhattan(u.tile, anchor.tile) <= RALLY_RADIUS]
+            if len(grouped) >= mass_at or at_cap:
+                for unit in attackers:
+                    orders.append({"o": "attack", "uid": unit.uid,
+                                   "to": list(target)})
+            else:
+                for unit in attackers:
+                    orders.append({"o": "attack", "uid": unit.uid,
+                                   "to": list(anchor.tile)})
         else:
             # Not ready to commit: spread out and take the map instead, which
             # is what actually wins the match.

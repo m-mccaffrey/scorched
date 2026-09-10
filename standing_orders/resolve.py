@@ -22,8 +22,9 @@ from __future__ import annotations
 from .fog import VisionCache, team_vision
 from .grid import NEIGHBOURS, chebyshev, find_path
 from .state import Building, MatchState, Unit
-from .units import (BUILD_RADIUS, BUILDING, NODE_INCOME, UNIT, UNIT_CAP,
-                    damage_between, damage_to_building)
+from .units import (BUILDING, RESEARCH_BY_CODE, UNIT, attack_bonus,
+                    available_research, build_turns_for, cost_of_building,
+                    damage_between, damage_to_building, hp_bonus)
 
 #: Beats per turn. Twelve divides evenly by every unit speed, which keeps all
 #: movement arithmetic in integers.
@@ -126,6 +127,8 @@ def apply_orders(state: MatchState, orders: dict, result: TurnResult) -> dict:
             unit.path = []
             unit.stance = "hold"
             unit.move_points = 0
+            unit.goal = None
+            unit.job = None
 
     occupancy = state.occupancy()
 
@@ -154,6 +157,8 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
             raise OrderError("target off the map")
         blocked = set(occupancy) - {unit.tile}
         unit.stance = kind
+        unit.goal = goal
+        unit.job = None
         unit.path = path_toward(state.map, unit.tile, goal, blocked)
         if not unit.path and goal != unit.tile:
             raise OrderError(f"{unit.type.name} cannot reach that tile")
@@ -164,6 +169,8 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
             raise OrderError("no such unit")
         unit.stance = "hold"
         unit.path = []
+        unit.goal = None
+        unit.job = None
 
     elif kind == "train":
         building = state.buildings.get(int(order.get("bid", -1)))
@@ -179,33 +186,55 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
             raise OrderError(f"not enough supply for a {unit_type.name}")
         if len(building.queue) >= 5:
             raise OrderError("production queue is full")
-        if _committed_units(state, player.pid) >= UNIT_CAP:
-            raise OrderError(f"army is at its cap of {UNIT_CAP}")
+        cap = state.army_cap_of(player.pid)
+        if state.army_size(player.pid) >= cap:
+            raise OrderError(f"army is at its cap of {cap} -- build a depot")
         player.supply -= unit_type.cost
         building.queue.append([code, unit_type.build_turns])
 
     elif kind == "build":
-        building = state.buildings.get(int(order.get("bid", -1)))
+        unit = state.units.get(int(order.get("uid", -1)))
         code = str(order.get("code", ""))
         target = _tile(order.get("to"))
-        if building is None or building.owner != player.pid:
-            raise OrderError("no such building")
-        if code not in BUILDING or code == "base":
+        if unit is None or unit.owner != player.pid or not unit.alive:
+            raise OrderError("no such unit")
+        if not unit.builder:
+            raise OrderError(f"a {unit.type.name} cannot build")
+        if code not in BUILDING or not BUILDING[code].buildable:
             raise OrderError("cannot build that")
         if target is None:
             raise OrderError("nowhere to build")
-        _check_build_site(state, player, target, occupancy)
-        building_type = BUILDING[code]
-        if player.supply < building_type.cost:
-            raise OrderError(f"not enough supply for a {building_type.name}")
-        player.supply -= building_type.cost
-        new_building = state.add_building(player.pid, code, target[0], target[1],
-                                          under=building_type.build_turns)
-        # It occupies its tile from the moment the foundations go down, so
-        # nobody can walk through a half-built barracks.
-        occupancy[target] = ("building", new_building.bid)
-        result.add(0, "found", bid=new_building.bid, owner=player.pid,
-                   code=code, at=list(target), under=building_type.build_turns)
+        _check_build_site(state, target, occupancy)
+        price = cost_of_building(code, player.research)
+        if player.supply < price:
+            raise OrderError(f"not enough supply for a {BUILDING[code].name}")
+        # Charged at commit so two orders cannot spend the same credits, and
+        # refunded if the site is taken by the time the Engineer arrives.
+        player.supply -= price
+        unit.job = (code, target)
+        unit.stance = "hold"
+        unit.goal = target
+        blocked = set(occupancy) - {unit.tile}
+        path = path_toward(state.map, unit.tile, target, blocked)
+        # Stop one tile short: the structure needs the site itself free.
+        unit.path = path[:-1] if path else []
+
+    elif kind == "research":
+        building = state.buildings.get(int(order.get("bid", -1)))
+        code = str(order.get("code", ""))
+        if building is None or building.owner != player.pid:
+            raise OrderError("no such building")
+        if building.code != "base" or not building.operational:
+            raise OrderError("research happens at the Command Post")
+        if building.project:
+            raise OrderError("already researching something")
+        project = RESEARCH_BY_CODE.get(code)
+        if project is None or project not in available_research(player.research):
+            raise OrderError("that project is not available")
+        if player.supply < project.cost:
+            raise OrderError(f"not enough supply for {project.name}")
+        player.supply -= project.cost
+        building.project = [code, project.turns]
 
     elif kind == "cancel":
         building = state.buildings.get(int(order.get("bid", -1)))
@@ -218,26 +247,19 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
         raise OrderError(f"unknown order '{kind}'")
 
 
-def _committed_units(state: MatchState, pid: int) -> int:
-    """Living units plus everything already queued -- the cap counts both."""
-    alive = len(state.units_of(pid))
-    queued = sum(len(b.queue) for b in state.buildings.values()
-                 if b.owner == pid and b.alive)
-    return alive + queued
+def _check_build_site(state: MatchState, target, occupancy) -> None:
+    """Anywhere an Engineer can walk.
 
-
-def _check_build_site(state: MatchState, player, target, occupancy) -> None:
+    There is no build radius any more: the Engineer has to physically get
+    there, which is limit enough, and it makes forward depots and cheeky
+    proxy towers into real options.
+    """
     if not state.map.passable(*target):
         raise OrderError("cannot build on that terrain")
+    if state.map.is_node(*target):
+        raise OrderError("cannot build on a resource node")
     if target in occupancy:
         raise OrderError("that tile is occupied")
-    near = any(
-        chebyshev(target, b.tile) <= BUILD_RADIUS
-        for b in state.buildings.values()
-        if b.owner == player.pid and b.alive
-    )
-    if not near:
-        raise OrderError(f"must build within {BUILD_RADIUS} tiles of your buildings")
 
 
 def _tile(value):
@@ -266,6 +288,8 @@ class Resolver:
     def run(self, orders: dict) -> tuple[TurnResult, dict]:
         rejected = apply_orders(self.state, orders, self.result)
         self.occupancy = self.state.occupancy()
+        for unit in self.state.units.values():
+            unit.rerouted = False              # one detour per unit per turn
         self._snapshot_vision(0)
         for beat in range(1, SUBTICKS + 1):
             moved = self._move_beat(beat)
@@ -313,8 +337,13 @@ class Resolver:
             if unit.move_points < cost:
                 continue
             if nxt in self.occupancy:
-                # Someone got there first. Standing orders do not adapt: the
-                # unit stops, and the player sees why on the replay.
+                # Someone got there first. Try once to go around -- with
+                # barricades, depots and towers on the board, a unit that
+                # simply stopped dead at the first obstacle would be
+                # unbearable. If there is genuinely no way through, halt and
+                # say so on the replay.
+                if self._reroute(unit):
+                    continue
                 unit.path = []
                 unit.move_points = 0
                 self.result.add(beat, "block", uid=unit.uid, at=list(nxt))
@@ -328,46 +357,80 @@ class Resolver:
             self.result.add(beat, "move", uid=unit.uid, to=list(nxt))
         return moved
 
+    def _reroute(self, unit: Unit) -> bool:
+        """Recompute a path around whatever appeared in the way. Once a turn."""
+        if unit.rerouted or unit.goal is None:
+            return False
+        unit.rerouted = True
+        blocked = set(self.occupancy) - {unit.tile}
+        goal = unit.goal
+        path = path_toward(self.state.map, unit.tile, goal, blocked)
+        if unit.job is not None and path:
+            path = path[:-1]
+        if not path:
+            return False
+        unit.path = path
+        return True
+
     # -- combat ------------------------------------------------------------
     def _combat_beat(self, beat: int) -> None:
         for unit in self._order_of_action():
             if not unit.alive:
                 continue
-            target = self._find_target(unit)
+            target = self._find_target_at(unit.tile, unit.type.reach, unit.owner)
             if target is None:
                 continue
-            if isinstance(target, Unit):
-                dealt = damage_between(unit.code, target.code)
-                target.hp -= dealt
-                self.result.add(beat, "shoot", uid=unit.uid, at=list(unit.tile),
-                                tgt=target.uid, kind="unit", dmg=dealt,
-                                hp=max(0, target.hp), to=list(target.tile))
-                if target.hp <= 0:
-                    self._kill_unit(beat, target)
-            else:
-                dealt = damage_to_building(unit.code)
-                target.hp -= dealt
-                self.result.add(beat, "shoot", uid=unit.uid, at=list(unit.tile),
-                                tgt=target.bid, kind="building", dmg=dealt,
-                                hp=max(0, target.hp), to=list(target.tile))
-                if target.hp <= 0:
-                    self._kill_building(beat, target)
+            bonus = self._attack_bonus(unit.owner)
+            self._shoot(beat, unit.uid, unit.tile, target,
+                        lambda tgt, code=unit.code, b=bonus: (
+                            damage_between(code, tgt.code, b)
+                            if isinstance(tgt, Unit)
+                            else damage_to_building(code, tgt.code, b)))
+        # Sentry towers fire too, and are the only structure that does.
+        for tower in sorted(self.state.buildings.values(), key=lambda b: b.bid):
+            info = BUILDING[tower.code]
+            if not tower.operational or not info.attack:
+                continue
+            target = self._find_target_at(tower.tile, info.reach, tower.owner)
+            if target is None:
+                continue
+            damage = info.attack + self._attack_bonus(tower.owner)
+            self._shoot(beat, -tower.bid, tower.tile, target,
+                        lambda _tgt, d=damage: d)
 
-    def _find_target(self, unit: Unit):
+    def _attack_bonus(self, pid: int) -> int:
+        player = self.state.players.get(pid)
+        return attack_bonus(player.research) if player else 0
+
+    def _shoot(self, beat: int, shooter_id: int, origin, target,
+               damage_of) -> None:
+        dealt = max(1, damage_of(target))
+        target.hp -= dealt
+        is_unit = isinstance(target, Unit)
+        self.result.add(beat, "shoot", uid=shooter_id, at=list(origin),
+                        tgt=target.uid if is_unit else target.bid,
+                        kind="unit" if is_unit else "building", dmg=dealt,
+                        hp=max(0, target.hp), to=list(target.tile))
+        if target.hp <= 0:
+            if is_unit:
+                self._kill_unit(beat, target)
+            else:
+                self._kill_building(beat, target)
+
+    def _find_target_at(self, origin, reach: int, owner: int):
         """Nearest enemy in reach; units before buildings, weakest first.
 
         Automatic and free -- no target micromanagement. The decisions in this
         game happen while writing orders, not while watching them run.
         """
-        reach = unit.type.reach
         best_unit = None
         best_unit_key = None
         best_building = None
         best_building_key = None
         for other in self.state.units.values():
-            if not other.alive or self.state.allied(other.owner, unit.owner):
+            if not other.alive or self.state.allied(other.owner, owner):
                 continue
-            distance = chebyshev(unit.tile, other.tile)
+            distance = chebyshev(origin, other.tile)
             if distance > reach:
                 continue
             key = (distance, other.hp, other.uid)
@@ -376,15 +439,18 @@ class Resolver:
         if best_unit is not None:
             return best_unit
         for building in self.state.buildings.values():
-            if not building.alive or self.state.allied(building.owner, unit.owner):
+            if not building.alive or self.state.allied(building.owner, owner):
                 continue
-            distance = chebyshev(unit.tile, building.tile)
+            distance = chebyshev(origin, building.tile)
             if distance > reach:
                 continue
             key = (distance, building.hp, building.bid)
             if best_building_key is None or key < best_building_key:
                 best_building, best_building_key = building, key
         return best_building
+
+    def _find_target(self, unit: Unit):
+        return self._find_target_at(unit.tile, unit.type.reach, unit.owner)
 
     def _kill_unit(self, beat: int, unit: Unit) -> None:
         unit.hp = 0
@@ -403,12 +469,19 @@ class Resolver:
     # -- end of turn -------------------------------------------------------
     def _end_of_turn(self) -> None:
         beat = SUBTICKS
+        self._work_sites(beat)
         for building in sorted(self.state.buildings.values(), key=lambda b: b.bid):
             if not building.alive:
                 continue
             if building.building_turns > 0:
+                # Progress needs the Engineer who started it still alongside.
+                builder = self.state.units.get(building.builder_uid)
+                if (builder is None or not builder.alive
+                        or chebyshev(builder.tile, building.tile) > 1):
+                    continue
                 building.building_turns -= 1
                 if building.building_turns == 0:
+                    builder.job = None
                     self.result.add(beat, "ready", bid=building.bid,
                                     at=list(building.tile), code=building.code)
                 continue
@@ -417,6 +490,8 @@ class Resolver:
                 entry[1] -= 1
                 if entry[1] <= 0:
                     self._spawn(beat, building, entry[0])
+            if building.project:
+                self._tick_research(beat, building)
         self._capture_nodes(beat)
         self._pay_income(beat)
         self._settle_eliminations(beat)
@@ -444,6 +519,56 @@ class Resolver:
                 self._kill_building(beat, building)
         if before != after:
             self.state.prune()
+
+    def _work_sites(self, beat: int) -> None:
+        """Lay foundations for Engineers who have reached their sites."""
+        for unit in sorted(self.state.units.values(), key=lambda u: u.uid):
+            if not unit.alive or unit.job is None:
+                continue
+            code, target = unit.job
+            if chebyshev(unit.tile, target) > 1:
+                continue                       # still walking
+            existing = self.occupancy.get(target)
+            if existing is not None:
+                if existing[0] == "building":
+                    continue                   # already under way here
+                # Somebody parked on the site while we walked over. Refund
+                # rather than silently swallowing the supply.
+                player = self.state.players.get(unit.owner)
+                if player is not None:
+                    player.supply += cost_of_building(code, player.research)
+                unit.job = None
+                self.result.add(beat, "nosite", uid=unit.uid, at=list(target))
+                continue
+            done = self.state.players[unit.owner].research \
+                if unit.owner in self.state.players else set()
+            turns = build_turns_for(code, done)
+            building = self.state.add_building(unit.owner, code, target[0],
+                                               target[1], under=turns)
+            building.builder_uid = unit.uid
+            self.occupancy[target] = ("building", building.bid)
+            self.result.add(beat, "found", bid=building.bid, owner=unit.owner,
+                            code=code, at=list(target), under=turns)
+
+    def _tick_research(self, beat: int, building: Building) -> None:
+        building.project[1] -= 1
+        if building.project[1] > 0:
+            return
+        code = building.project[0]
+        building.project = None
+        player = self.state.players.get(building.owner)
+        if player is None:
+            return
+        before = hp_bonus(player.research)
+        player.research.add(code)
+        gained = hp_bonus(player.research) - before
+        if gained:
+            # Armour applies at once, to the troops already in the field.
+            for unit in self.state.units.values():
+                if unit.alive and unit.owner == player.pid:
+                    unit.max_hp += gained
+                    unit.hp += gained
+        self.result.add(beat, "researched", pid=player.pid, code=code)
 
     def _spawn(self, beat: int, building: Building, code: str) -> None:
         tile = self._free_tile_near(building.tile)
@@ -492,7 +617,7 @@ class Resolver:
             amount = sum(BUILDING[b.code].income
                          for b in self.state.buildings.values()
                          if b.owner == player.pid and b.operational)
-            amount += NODE_INCOME * self.state.nodes_of(player.pid)
+            amount += self.state.harvest_income(player.pid)
             player.supply += amount
             self.result.income[player.pid] = amount
             self.result.add(beat, "income", pid=player.pid, amount=amount,

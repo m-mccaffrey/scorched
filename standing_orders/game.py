@@ -24,14 +24,15 @@ PHASE_OVER = "over"
 MAPS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps")
 
 #: What each player starts a match holding, beyond their Command Post.
-OPENING_UNITS = ("trooper", "scout")
+#: Two Engineers, because the economy cannot start without them.
+OPENING_UNITS = ("worker", "worker", "trooper", "scout")
 
 
 @dataclass
 class Settings:
     map_name: str = "duel"
     teams: bool = False           # 2v2 when four players; free-for-all otherwise
-    start_supply: int = 15
+    start_supply: int = 20
     order_time: int = 90          # seconds; 0 disables the clock
 
     def clamp(self) -> "Settings":

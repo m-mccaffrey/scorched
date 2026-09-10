@@ -10,7 +10,7 @@ from standing_orders.grid import TileMap
 from standing_orders.resolve import (ATTACK_EVERY, SUBTICKS,
                                      resolve_turn)
 from standing_orders.state import MatchState, Player
-from standing_orders.units import UNIT, UNIT_CAP
+from standing_orders.units import ARMY_CAP_BASE, UNIT
 
 
 def arena(width=20, height=10, players=2):
@@ -197,11 +197,20 @@ def test_cannot_train_beyond_the_army_cap():
     state = arena()
     base = state.add_building(0, "base", 5, 5)
     state.players[0].supply = 999
-    for i in range(UNIT_CAP):
+    for i in range(state.army_cap_of(0)):
         state.add_unit(0, "scout", (i % 15) + 2, 8)
     _result, rejected = resolve_turn(state, {
         0: [{"o": "train", "bid": base.bid, "code": "scout"}]})
     assert rejected[0] and "cap" in rejected[0][0]
+
+
+def test_supply_depots_raise_the_army_cap():
+    state = arena()
+    assert state.army_cap_of(0) == ARMY_CAP_BASE
+    depot = state.add_building(0, "depot", 6, 6, under=2)
+    assert state.army_cap_of(0) == ARMY_CAP_BASE, "under construction: no cap yet"
+    depot.building_turns = 0
+    assert state.army_cap_of(0) > ARMY_CAP_BASE
 
 
 def test_cannot_spend_the_same_supply_twice():
@@ -222,30 +231,66 @@ def test_barracks_gates_the_advanced_units():
     assert rejected[0] and "cannot train" in rejected[0][0]
 
 
-def test_construction_takes_time_then_works():
+def test_an_engineer_walks_to_the_site_and_builds():
     state = arena()
-    base = state.add_building(0, "base", 5, 5)
+    state.add_building(0, "base", 5, 5)
+    worker = state.add_unit(0, "worker", 5, 7)
     state.players[0].supply = 50
-    result, rejected = resolve_turn(state, {
-        0: [{"o": "build", "bid": base.bid, "code": "barracks", "to": [8, 5]}]})
+    _result, rejected = resolve_turn(state, {
+        0: [{"o": "build", "uid": worker.uid, "code": "barracks",
+             "to": [12, 7]}]})
     assert not rejected
-    new = [b for b in state.buildings.values() if b.code == "barracks"][0]
-    assert not new.operational
-    for _ in range(3):
+    assert state.players[0].supply < 50, "charged at commit, not on arrival"
+    for _ in range(10):
         resolve_turn(state, {})
-    assert new.operational
+    made = [b for b in state.buildings.values() if b.code == "barracks"]
+    assert made and made[0].operational
     _result, rejected = resolve_turn(state, {
-        0: [{"o": "train", "bid": new.bid, "code": "bruiser"}]})
+        0: [{"o": "train", "bid": made[0].bid, "code": "bruiser"}]})
     assert not rejected
 
 
-def test_cannot_build_far_from_your_territory():
+def test_construction_stalls_without_its_engineer():
     state = arena()
-    base = state.add_building(0, "base", 2, 2)
+    state.add_building(0, "base", 5, 5)
+    worker = state.add_unit(0, "worker", 7, 5)
+    state.players[0].supply = 50
+    resolve_turn(state, {0: [{"o": "build", "uid": worker.uid,
+                              "code": "depot", "to": [8, 5]}]})
+    resolve_turn(state, {})
+    site = [b for b in state.buildings.values() if b.code == "depot"][0]
+    remaining = site.building_turns
+    worker.hp = 0
+    state.prune()
+    resolve_turn(state, {})
+    assert site.building_turns == remaining, "no builder, no progress"
+
+
+def test_only_engineers_can_build():
+    state = arena()
+    state.add_building(0, "base", 5, 5)
+    trooper = state.add_unit(0, "trooper", 6, 5)
     state.players[0].supply = 50
     _result, rejected = resolve_turn(state, {
-        0: [{"o": "build", "bid": base.bid, "code": "barracks", "to": [18, 8]}]})
-    assert rejected[0] and "within" in rejected[0][0]
+        0: [{"o": "build", "uid": trooper.uid, "code": "depot", "to": [8, 5]}]})
+    assert rejected[0] and "cannot build" in rejected[0][0]
+
+
+def test_cannot_build_on_a_node_or_an_occupied_tile():
+    state = arena()
+    state.add_building(0, "base", 2, 2)
+    worker = state.add_unit(0, "worker", 4, 4)
+    other = state.add_unit(0, "scout", 8, 4)
+    state.map.nodes.append((6, 4))
+    state.map.node_set.add((6, 4))
+    state.players[0].supply = 50
+    _result, rejected = resolve_turn(state, {
+        0: [{"o": "build", "uid": worker.uid, "code": "depot", "to": [6, 4]}]})
+    assert rejected[0] and "node" in rejected[0][0]
+    _result, rejected = resolve_turn(state, {
+        0: [{"o": "build", "uid": worker.uid, "code": "depot",
+             "to": list(other.tile)}]})
+    assert rejected[0] and "occupied" in rejected[0][0]
 
 
 def test_cannot_order_another_players_units():
@@ -261,7 +306,8 @@ def test_cannot_order_another_players_units():
     {"o": "nonsense"}, {"o": "move", "uid": 999, "to": [1, 1]},
     {"o": "move", "uid": 1, "to": "over there"},
     {"o": "train", "bid": 999, "code": "scout"},
-    {"o": "build", "bid": 1, "code": "base", "to": [1, 1]},
+    {"o": "build", "uid": 1, "code": "base", "to": [1, 1]},
+    {"o": "research", "bid": 1, "code": "nonsense"},
 ])
 def test_malformed_orders_are_rejected_not_fatal(order):
     state = arena()
@@ -277,6 +323,7 @@ def test_malformed_orders_are_rejected_not_fatal(order):
 def test_node_capture_persists_after_the_unit_leaves():
     state = arena()
     state.map.nodes.append((5, 5))
+    state.map.node_set.add((5, 5))
     state.add_building(0, "base", 2, 2)
     unit = state.add_unit(0, "trooper", 5, 5)
     result, _ = resolve_turn(state, {})
@@ -293,6 +340,7 @@ def test_node_capture_persists_after_the_unit_leaves():
 def test_a_node_changes_hands():
     state = arena()
     state.map.nodes.append((5, 5))
+    state.map.node_set.add((5, 5))
     mine = state.add_unit(0, "trooper", 5, 5)
     resolve_turn(state, {})
     assert state.node_owner[(5, 5)] == 0
@@ -417,3 +465,166 @@ def test_a_slow_unit_can_cross_a_forest():
     for _ in range(8):
         resolve_turn(state, {})
     assert bruiser.x > 1, "a speed-1 unit must be able to enter forest at all"
+
+
+# -- the worker economy ----------------------------------------------------
+
+def node_arena():
+    state = arena(width=24, height=10)
+    state.map.nodes.append((10, 5))
+    state.map.node_set.add((10, 5))
+    return state
+
+
+def test_harvest_needs_worker_node_and_depot_together():
+    """All three, every turn. Each is something an opponent can take away."""
+    state = node_arena()
+    base = [b for b in state.buildings.values() if b.owner == 0][0]
+    base.x, base.y = 2, 2                       # far from the node
+    worker = state.add_unit(0, "worker", 10, 5)
+
+    result, _ = resolve_turn(state, {})
+    bare = result.income[0]
+
+    depot = state.add_building(0, "depot", 12, 5)
+    result, _ = resolve_turn(state, {})
+    working = result.income[0]
+    assert working > bare, "a depot in range should start the supply flowing"
+
+    worker.x, worker.y = 1, 8                   # walk off the node
+    result, _ = resolve_turn(state, {})
+    assert result.income[0] == bare
+
+    worker.x, worker.y = 10, 5
+    depot.hp = 0
+    state.prune()
+    result, _ = resolve_turn(state, {})
+    assert result.income[0] == bare, "killing the depot should stop the income"
+
+
+def test_a_depot_under_construction_does_not_harvest_or_raise_the_cap():
+    state = node_arena()
+    base = [b for b in state.buildings.values() if b.owner == 0][0]
+    base.x, base.y = 2, 2
+    state.add_unit(0, "worker", 10, 5)
+    depot = state.add_building(0, "depot", 12, 5, under=2)
+    before_cap = state.army_cap_of(0)
+    result, _ = resolve_turn(state, {})
+    unfinished_income = result.income[0]
+    assert state.army_cap_of(0) == before_cap
+    assert state.harvest_income(0) == 0
+
+    depot.building_turns = 0
+    result, _ = resolve_turn(state, {})
+    assert state.army_cap_of(0) > before_cap
+    assert result.income[0] > unfinished_income
+
+
+# -- walls -----------------------------------------------------------------
+
+def test_bruisers_and_engineers_break_walls_far_faster():
+    def hits_to_break(code):
+        state = arena()
+        wall = state.add_building(1, "wall", 6, 5)
+        state.add_unit(0, code, 5, 5)
+        turns = 0
+        while wall.alive and turns < 40:
+            resolve_turn(state, {})
+            turns += 1
+        return turns
+
+    fast = max(hits_to_break("bruiser"), hits_to_break("worker"))
+    slow = min(hits_to_break("trooper"), hits_to_break("ranged"))
+    assert fast * 2 < slow, "a wall should be answered by a Bruiser, not a rifle"
+
+
+def test_a_wall_is_never_an_absolute_full_stop():
+    """Everything can chip through eventually, so no position is unbreakable."""
+    state = arena()
+    wall = state.add_building(1, "wall", 6, 5)
+    state.add_unit(0, "trooper", 5, 5)
+    for _ in range(40):
+        resolve_turn(state, {})
+        if not wall.alive:
+            break
+    assert not wall.alive
+
+
+def test_walls_block_movement():
+    state = arena()
+    for y in range(0, 10):
+        state.add_building(1, "wall", 10, y)
+    scout = state.add_unit(0, "scout", 5, 5)
+    resolve_turn(state, {0: [{"o": "move", "uid": scout.uid, "to": [15, 5]}]})
+    for _ in range(6):
+        resolve_turn(state, {})
+    assert scout.x < 10
+
+
+# -- sentry towers ---------------------------------------------------------
+
+def test_a_sentry_tower_shoots_and_outranges_infantry():
+    state = arena()
+    state.add_building(0, "tower", 10, 5)
+    victim = state.add_unit(1, "trooper", 12, 5)   # two tiles off: in reach
+    resolve_turn(state, {})
+    assert victim.hp < UNIT["trooper"].hp
+
+
+def test_a_tower_under_construction_does_not_shoot():
+    state = arena()
+    state.add_building(0, "tower", 10, 5, under=2)
+    victim = state.add_unit(1, "trooper", 11, 5)
+    resolve_turn(state, {})
+    assert victim.hp == UNIT["trooper"].hp
+
+
+# -- research --------------------------------------------------------------
+
+def test_research_costs_supply_takes_turns_and_then_applies():
+    state = arena()
+    base = [b for b in state.buildings.values() if b.owner == 0][0]
+    trooper = state.add_unit(0, "trooper", 5, 5)
+    state.players[0].supply = 100
+    _result, rejected = resolve_turn(state, {
+        0: [{"o": "research", "bid": base.bid, "code": "armour1"}]})
+    assert not rejected
+    assert state.players[0].supply < 100
+    for _ in range(4):
+        resolve_turn(state, {})
+    assert "armour1" in state.players[0].research
+    # Armour reaches the troops already in the field, not just new recruits.
+    assert trooper.max_hp > UNIT["trooper"].hp
+    assert trooper.hp == trooper.max_hp
+
+
+def test_weapons_research_raises_damage():
+    def damage_dealt(research):
+        state = arena()
+        state.players[0].research = set(research)
+        state.add_unit(0, "trooper", 5, 5)
+        victim = state.add_unit(1, "trooper", 6, 5)
+        start = victim.hp
+        resolve_turn(state, {})
+        return start - victim.hp
+
+    assert damage_dealt({"weapons1"}) > damage_dealt(set())
+
+
+def test_cannot_run_two_projects_at_once():
+    state = arena()
+    base = [b for b in state.buildings.values() if b.owner == 0][0]
+    state.players[0].supply = 100
+    _result, rejected = resolve_turn(state, {
+        0: [{"o": "research", "bid": base.bid, "code": "armour1"},
+            {"o": "research", "bid": base.bid, "code": "weapons1"}]})
+    assert rejected[0] and "already researching" in rejected[0][0]
+
+
+def test_research_respects_prerequisites():
+    state = arena()
+    base = [b for b in state.buildings.values() if b.owner == 0][0]
+    state.players[0].supply = 100
+    _result, rejected = resolve_turn(state, {
+        0: [{"o": "research", "bid": base.bid, "code": "armour2"}]})
+    assert rejected[0] and "not available" in rejected[0][0]

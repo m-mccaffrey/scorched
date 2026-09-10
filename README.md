@@ -202,33 +202,65 @@ immediately, and `Hold` cancels it.
 
 ### The rules
 
-**One resource, Supply.** Your Command Post produces a trickle; resource nodes
-produce far more. Capture is *persistent* — stand on a node once and it keeps
-paying after you march on, so taking ground is worth doing and holding it is
-worth defending.
+**One resource, Supply**, and getting it needs three things at once: an
+**Engineer standing on a resource node**, a **Supply Depot or Command Post
+within five tiles** of that node, and that structure finished. The Engineer
+transmits to the depot — nothing shuttles, so there is no per-turn busywork —
+but every one of those three is something an opponent can take away. Node
+ownership itself is persistent: stand on one once and it stays yours.
 
-**Four units in a rock-paper-scissors triangle**, plus a generalist:
+**Five units.** Three form a rock-paper-scissors triangle, one is an honest
+generalist, and one builds things:
 
 | Unit | Cost | Build | Speed | HP | Attack | Range | Beats |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| Engineer | 3 | 1 turn | 2 | 10 | 1 | 1 | — (builds and harvests) |
 | Scout | 3 | 1 turn | 3 | 12 | 2 | 1 | Gunner |
 | Trooper | 5 | 2 turns | 2 | 24 | 4 | 1 | — |
 | Gunner | 7 | 2 turns | 2 | 15 | 5 | 2 | Bruiser |
 | Bruiser | 9 | 3 turns | 1 | 48 | 6 | 1 | Scout |
 
 Countering gives ×1.5 damage out and ×0.5 back. Gunners and Bruisers need a
-**Barracks**, so rushing one is a real opening decision against simply making
-more Troopers.
+**Barracks**, so rushing one is a real opening decision.
 
-**An army cap of 12.** This is the most important number in the game: without
-it, two even sides reinforce exactly as fast as they die and the match never
-ends. With it, losing a battle actually costs you something.
+**Five structures**, all raised by an Engineer who has to walk there — there is
+no build radius, so forward depots and cheeky proxy towers are both on the
+table:
+
+| Structure | Cost | Build | HP | What it does |
+| --- | --- | --- | --- | --- |
+| Command Post | — | — | 90 | Trains Engineers, Scouts, Troopers. Researches. Lose it and you are out |
+| Supply Depot | 8 | 2 turns | 50 | **+4 army cap**, and receives supply from five tiles away |
+| Barracks | 10 | 3 turns | 60 | Unlocks Gunners and Bruisers |
+| Sentry Tower | 8 | 2 turns | 40 | Shoots three tiles. Never moves |
+| Barricade | 2 | 1 turn | 30 | Blocks the way |
+
+**The army cap starts at 12 and grows by 4 per Supply Depot, to 24.** Engineers
+count against it, so every worker is one fewer soldier — that tension is what
+makes the economy a decision rather than free money. And because depots raise
+the ceiling, an economy buys you a *bigger army*, not merely a faster-rebuilt
+one. Some cap is essential either way: without one, two even sides reinforce
+exactly as fast as they die and the match never ends.
+
+**Barricades** are answered by Bruisers and Engineers, who tear one down in
+about two turns. Everything else does quarter damage — roughly ten turns — so a
+wall is never an absolute full stop, but bringing a rifle to a wall is
+obviously the wrong answer. Units that meet an obstacle route around it rather
+than stopping dead.
+
+**Research** happens at the Command Post, one project at a time, and applies to
+your whole force permanently: Weapons I/II (+1 attack each), Armour I/II (+4
+health each, applied to troops already in the field), Logistics (+2 per working
+Engineer) and Engineering (structures finish a turn sooner, Barricades cost 1).
+Its real job is to give a healthy economy somewhere to spend once quantity is
+capped.
 
 **Fog of war**, shared with your team. Ground you have scouted stays drawn but
 dimmed; ground you have never seen is black. Enemies you have seen and lost
 track of linger as ghosts at their last known position.
 
-**Win by destroying every enemy Command Post.** There is no turn limit.
+**Win by destroying every enemy Command Post.** There is no turn limit. Losing
+your Command Post takes your remaining forces with it.
 
 ### Maps
 
@@ -278,11 +310,22 @@ Units mirror to face the way they last moved.
 
 Four skill levels, from *Novice* to *Cyborg*. They play **under the same fog as
 everyone else** — a cheating bot makes scouting pointless — and differ by
-restraint and discipline rather than by information: a Novice dribbles units
-forward and ignores what it is fighting, while a Veteran masses an army,
-counter-picks its production, and comes home when its base is threatened.
+restraint and discipline rather than by information.
 
-Veteran beats Novice about 13 games in 14.
+Skill covers the whole game, not just fighting. A Novice runs one Engineer, one
+production line, never researches and never expands; a Veteran masses an army
+before committing, counter-picks its production, comes home when its base is
+threatened, and builds forward depots to grow its cap. When difficulty varied
+only in how a bot *fought*, the economy decided matches instead and every level
+converged on a coin flip.
+
+Veteran beats Novice 8 games in 8, in a median of 46 turns.
+
+**Known limitation:** two bots of the *same* skill run identical economies and
+grind for a long time — a median of 135 turns, and occasionally longer. That is
+symmetric AI doing what symmetric AI does in any RTS; a human on either side
+breaks it immediately. Mismatched bots, which is what a real game is, settle in
+40–90 turns.
 
 ---
 
@@ -364,7 +407,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 210 tests
+python3 -m pytest          # 234 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

@@ -11,7 +11,7 @@ import pygame
 import pytest
 
 from standing_orders.game import Settings
-from standing_orders.units import UNIT, UNIT_CAP
+from standing_orders.units import UNIT
 
 
 @pytest.fixture(scope="module")
@@ -121,8 +121,10 @@ def test_queued_production_is_costed_and_capped(app):
     assert app._spent() == UNIT["scout"].cost
     assert app._army_size() == before + 1
     # Fill to the cap and confirm the client refuses rather than sending junk.
-    while app._army_size() < UNIT_CAP:
+    guard = 0
+    while app._army_size() < app._army_cap() and guard < 40:
         app._queue_train("scout")
+        guard += 1
     count = len(app.queued)
     app._queue_train("scout")
     assert len(app.queued) == count

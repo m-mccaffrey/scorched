@@ -28,8 +28,9 @@ from ..game import Settings, available_maps
 from ..grid import TileMap, describe, find_path
 from ..server import GAME_ID, SO_PORT, Server
 from ..state import MAX_PLAYERS
-from ..units import (BUILD_RADIUS, BUILDING, NODE_INCOME, UNIT, UNIT_CAP,
-                     catalogue)
+from ..units import (BUILDING, BUILDINGS, HARVEST_RADIUS, HARVEST_RATE,
+                     RESEARCH_BY_CODE, UNIT, available_research,
+                     cost_of_building, catalogue)
 from .audio import OrdersSfx
 from .render import (HUD_H, PANEL_W, SCREEN_H, SCREEN_W, TOP_H, Renderer,
                      draw_tooltip)
@@ -679,6 +680,8 @@ class App:
             self._queue_train(action.split(":")[1])
         elif action.startswith("place:"):
             self.placing = action.split(":")[1]
+        elif action.startswith("research:"):
+            self._queue_research(action.split(":")[1])
         elif action == "skip" and self.replay is not None:
             self.replay.skip()
 
@@ -692,45 +695,86 @@ class App:
             self._complain("Not enough supply")
             self.sfx.play("deny")
             return
-        if self._army_size() >= UNIT_CAP:
-            self._complain(f"Army is capped at {UNIT_CAP}")
+        cap = self._army_cap()
+        if self._army_size() >= cap:
+            self._complain(f"Army capped at {cap} -- build a Supply Depot")
             self.sfx.play("deny")
             return
         self.queued.append({"o": "train", "bid": building["bid"], "code": code})
         self.sfx.play("order")
         self.ready_sent = False
 
-    def _place_building(self, tile) -> None:
-        code, self.placing = self.placing, None
+    def _queue_research(self, code: str) -> None:
         base = next((b for b in self.view.buildings.values()
-                     if b["owner"] == self.my_pid), None)
-        if base is None:
+                     if b["owner"] == self.my_pid and b["code"] == "base"), None)
+        project = RESEARCH_BY_CODE.get(code)
+        if base is None or project is None:
             return
-        if self._spent() + BUILDING[code].cost > self.view.supply:
+        if base.get("project") or any(o["o"] == "research" for o in self.queued):
+            self._complain("Already researching something")
+            self.sfx.play("deny")
+            return
+        if self._spent() + project.cost > self.view.supply:
             self._complain("Not enough supply")
             self.sfx.play("deny")
             return
-        self.queued.append({"o": "build", "bid": base["bid"], "code": code,
+        self.queued.append({"o": "research", "bid": base["bid"], "code": code})
+        self.sfx.play("order")
+        self.ready_sent = False
+
+    def _place_building(self, tile) -> None:
+        """Assign the job to an Engineer, who walks there and builds it."""
+        code, self.placing = self.placing, None
+        workers = [u for u in self.view.mine(self.my_pid)
+                   if UNIT[u["code"]].builder]
+        if not workers:
+            self._complain("You need an Engineer to build")
+            self.sfx.play("deny")
+            return
+        price = cost_of_building(code, self._my_research())
+        if self._spent() + price > self.view.supply:
+            self._complain("Not enough supply")
+            self.sfx.play("deny")
+            return
+        if self.view.building_at(tile) or self.view.unit_at(tile):
+            self._complain("That tile is occupied")
+            self.sfx.play("deny")
+            return
+        # Prefer an Engineer the player has selected; otherwise the nearest.
+        chosen = next((u for u in workers if u["uid"] in self.selected), None)
+        if chosen is None:
+            chosen = min(workers, key=lambda u: abs(u["x"] - tile[0])
+                         + abs(u["y"] - tile[1]))
+        self.queued.append({"o": "build", "uid": chosen["uid"], "code": code,
                             "to": list(tile)})
         self.sfx.play("order")
         self.ready_sent = False
 
     def _spent(self) -> int:
+        done = self._my_research()
         total = 0
         for order in self.queued:
             if order["o"] == "train":
                 total += UNIT[order["code"]].cost
             elif order["o"] == "build":
-                total += BUILDING[order["code"]].cost
+                total += cost_of_building(order["code"], done)
+            elif order["o"] == "research":
+                project = RESEARCH_BY_CODE.get(order["code"])
+                total += project.cost if project else 0
         return total
 
     def _army_size(self) -> int:
-        living = len(self.view.mine(self.my_pid))
-        queued = sum(1 for o in self.queued if o["o"] == "train")
-        pending = sum(len(b.get("queue", []))
-                      for b in self.view.buildings.values()
-                      if b["owner"] == self.my_pid)
-        return living + queued + pending
+        """What the server counts, plus anything queued but not yet sent."""
+        return self.view.army + sum(1 for o in self.queued if o["o"] == "train")
+
+    def _army_cap(self) -> int:
+        cap = self.view.cap
+        # A depot we have queued this turn does not count until it is built,
+        # so this is deliberately the server's number and not a prediction.
+        return cap if cap else 0
+
+    def _my_research(self) -> set:
+        return set(self.players.get(self.my_pid, {}).get("research", []))
 
     def _send_ready(self) -> None:
         orders = [{k: v for k, v in order.items() if k != "path"}
@@ -1093,7 +1137,10 @@ class App:
                     who = self.players.get(holder, {}).get("name", "?")
                     lines.append((f"Held by {who}", team_color(
                         self.colors.get(holder, 0)), 14))
-                lines.append((f"+{NODE_INCOME} supply each turn", UI_GOOD, 14))
+                lines.append((f"+{HARVEST_RATE} a turn with an Engineer on it",
+                              UI_GOOD, 14))
+                lines.append((f"...and a depot within {HARVEST_RADIUS} tiles",
+                              UI_DIM, 13))
             if not known:
                 lines.append(("Unscouted", UI_DIM, 13))
 
@@ -1137,10 +1184,120 @@ class App:
 
         if self.selected_building is not None:
             self._draw_production(panel, x, y)
+        elif self._selected_workers():
+            self._draw_engineering(panel, x, y)
         elif self.selected:
             self._draw_selection(panel, x, y)
         else:
             self._draw_overview(panel, x, y)
+
+    def _selected_workers(self) -> list:
+        return [self.view.units[uid] for uid in sorted(self.selected)
+                if uid in self.view.units
+                and UNIT[self.view.units[uid]["code"]].builder]
+
+    def _draw_engineering(self, panel, x, y) -> None:
+        """What a selected Engineer can raise."""
+        workers = self._selected_workers()
+        ui.draw_text(self.screen, f"{len(workers)} ENGINEER"
+                     f"{'S' if len(workers) != 1 else ''}", x, y, 17, UI_ACCENT)
+        y += 18
+        job = next((w.get("job") for w in workers if w.get("job")), None)
+        if job:
+            ui.draw_text(self.screen, f"building a {BUILDING[job[2]].name}",
+                         x, y, 13, UI_GOOD)
+        else:
+            ui.draw_text(self.screen, "click a structure, then a tile", x, y,
+                         13, UI_DIM)
+        y += 16
+        done = self._my_research()
+        for info in BUILDINGS:
+            if not info.buildable:
+                continue
+            price = cost_of_building(info.code, done)
+            affordable = self._spent() + price <= self.view.supply
+            rect = pygame.Rect(x, y, PANEL_W - 16, 24)
+            chosen = self.placing == info.code
+            ui.draw_panel(self.screen, rect,
+                          UI_PANEL_HI if (affordable or chosen)
+                          else shade(UI_PANEL, 0.8))
+            if chosen:
+                pygame.draw.rect(self.screen, UI_ACCENT, rect, 1)
+            ui.draw_text(self.screen, info.name, rect.x + 5, rect.y + 4, 15,
+                         UI_TEXT if affordable else UI_DIM)
+            ui.draw_text(self.screen, f"{price}s {info.build_turns}t",
+                         rect.right - 5, rect.y + 4, 13, UI_DIM,
+                         anchor="topright")
+            self._button(rect, "", f"place:{info.code}", hidden=True,
+                         enabled=affordable)
+            self._tips.append((rect, self._structure_tip(info.code)))
+            y += 27
+        ui.draw_text(self.screen, "Engineers on a node inside", x, y + 4, 12,
+                     UI_DIM)
+        ui.draw_text(self.screen, f"{HARVEST_RADIUS} tiles of a depot send supply.",
+                     x, y + 16, 12, UI_DIM)
+
+    def _structure_tip(self, code: str) -> list:
+        info = BUILDING[code]
+        done = self._my_research()
+        lines = [(info.name, UI_ACCENT, 17),
+                 (f"{cost_of_building(code, done)} supply   "
+                  f"{info.build_turns} turns", UI_TEXT, 14),
+                 (f"{info.hp} hp", UI_TEXT, 14)]
+        if info.supply_cap:
+            lines.append((f"+{info.supply_cap} army cap", UI_GOOD, 14))
+        if info.harvests:
+            lines.append((f"Receives supply within {HARVEST_RADIUS} tiles",
+                          UI_GOOD, 14))
+        if info.attack:
+            lines.append((f"Attack {info.attack}, range {info.reach}",
+                          UI_TEXT, 14))
+        if info.produces:
+            lines.append(("Trains " + ", ".join(UNIT[c].name
+                                                for c in info.produces),
+                          UI_TEXT, 14))
+        if info.wall:
+            lines.append(("Bruisers and Engineers break it fast", UI_WARN, 14))
+        lines.append((info.blurb, UI_DIM, 13))
+        return lines
+
+    def _draw_research(self, panel, x, y, building) -> int:
+        """Research rows under the Command Post's production list."""
+        done = self._my_research()
+        pending = next((o for o in self.queued if o["o"] == "research"), None)
+        active = building.get("project") or (
+            [pending["code"], RESEARCH_BY_CODE[pending["code"]].turns]
+            if pending else None)
+        ui.draw_text(self.screen, "RESEARCH", x, y, 14, UI_DIM)
+        y += 15
+        if active:
+            project = RESEARCH_BY_CODE.get(active[0])
+            label = project.name if project else active[0]
+            ui.draw_text(self.screen, f"{label}: {active[1]} turns", x, y, 14,
+                         UI_ACCENT)
+            return y + 16
+        options = available_research(done)
+        if not options:
+            ui.draw_text(self.screen, "all complete", x, y, 13, UI_GOOD)
+            return y + 16
+        for project in options[:4]:
+            affordable = self._spent() + project.cost <= self.view.supply
+            rect = pygame.Rect(x, y, PANEL_W - 16, 20)
+            ui.draw_panel(self.screen, rect,
+                          UI_PANEL_HI if affordable else shade(UI_PANEL, 0.8))
+            ui.draw_text(self.screen, project.name, rect.x + 5, rect.y + 2, 14,
+                         UI_TEXT if affordable else UI_DIM)
+            ui.draw_text(self.screen, f"{project.cost}s", rect.right - 5,
+                         rect.y + 2, 13, UI_DIM, anchor="topright")
+            self._button(rect, "", f"research:{project.code}", hidden=True,
+                         enabled=affordable)
+            self._tips.append((rect, [
+                (project.name, UI_ACCENT, 17),
+                (f"{project.cost} supply   {project.turns} turns", UI_TEXT, 14),
+                (project.blurb, UI_GOOD, 14),
+            ]))
+            y += 23
+        return y
 
     def _draw_production(self, panel, x, y) -> None:
         building = self.view.buildings.get(self.selected_building)
@@ -1173,7 +1330,7 @@ class App:
             self._tips.append((rect, self._unit_tip(code)))
             y += 29
         if building["code"] == "base":
-            y += 4
+            y = self._draw_research(panel, x, y + 4, building) + 4
             barracks = BUILDING["barracks"]
             rect = pygame.Rect(x, y, PANEL_W - 16, 24)
             ui.draw_panel(self.screen, rect, UI_PANEL_HI)
@@ -1182,13 +1339,7 @@ class App:
             ui.draw_text(self.screen, f"{barracks.cost}s", rect.right - 5,
                          rect.y + 4, 13, UI_DIM, anchor="topright")
             self._button(rect, "", "place:barracks", hidden=True)
-            self._tips.append((rect, [
-                (barracks.name, UI_ACCENT, 17),
-                (f"{barracks.cost} supply   {barracks.build_turns} turns to build",
-                 UI_TEXT, 14),
-                ("Unlocks Gunners and Bruisers", UI_GOOD, 14),
-                (f"Place within {BUILD_RADIUS} tiles of your buildings", UI_DIM, 13),
-            ]))
+            self._tips.append((rect, self._structure_tip("barracks")))
 
     def _unit_tip(self, code: str) -> list:
         info = UNIT[code]
@@ -1269,9 +1420,11 @@ class App:
             ui.draw_text(self.screen, f"-{self._spent()} queued", 170, bar.y + 20,
                          12, UI_DIM)
 
-        ui.draw_text(self.screen, "ARMY", 240, bar.y + 4, 12, UI_DIM)
-        ui.draw_text(self.screen, f"{self._army_size()}/{UNIT_CAP}", 240,
-                     bar.y + 15, 20, UI_TEXT)
+        ui.draw_text(self.screen, "ARMY", 236, bar.y + 4, 12, UI_DIM)
+        cap = self._army_cap()
+        size = self._army_size()
+        ui.draw_text(self.screen, f"{size}/{cap}", 236, bar.y + 15, 20,
+                     UI_WARN if cap and size >= cap else UI_TEXT)
 
         ui.draw_text(self.screen, "NODES", 310, bar.y + 4, 12, UI_DIM)
         held = sum(1 for owner in self.view.node_owner.values()
