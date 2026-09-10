@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "scorched"
-version = "1.0.0"
-description = "A lo-fi, cross-platform, LAN-multiplayer artillery game in the spirit of Scorched Earth"
+name = "lanarcade"
+version = "1.1.0"
+description = "Lo-fi cross-platform LAN games for Windows and Raspberry Pi: Scorched (artillery) and Standing Orders (turn-based RTS)"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -28,9 +28,13 @@ dev = ["pytest>=7", "pyflakes>=3"]
 
 [project.scripts]
 scorched = "scorched.__main__:main"
+standing-orders = "standing_orders.__main__:main"
+
+[tool.setuptools.package-data]
+standing_orders = ["maps/*.map"]
 
 [tool.setuptools]
-packages = ["lanlib", "scorched", "scorched.client"]
+packages = ["lanlib", "scorched", "scorched.client", "standing_orders", "standing_orders.client"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
