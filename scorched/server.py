@@ -30,6 +30,8 @@ HEARTBEAT = 0.5          # state broadcast cadence while waiting on a player
 AIM_MIRROR_HZ = 12       # how often a spectator's view of the turret updates
 BOT_THINK = (0.55, 1.25)
 ANIM_GRACE = 3.5         # extra seconds allowed for the slowest client
+GAME_ID = "scorched"
+
 BOT_NAMES = ("Hal", "Bishop", "Marvin", "Skynet", "Deep Thought", "Clu",
              "Wintermute", "Roy", "Ash", "Proteus")
 
@@ -126,6 +128,7 @@ class Server:
         game = self.game
         humans = sum(1 for p in game.players.values() if not p.bot)
         return {
+            "game": GAME_ID,
             "name": self.name, "port": self.bound_port, "version": PROTOCOL_VERSION,
             "players": len(game.players), "humans": humans, "max": MAX_PLAYERS,
             "phase": game.phase, "round": game.round, "rounds": game.settings.rounds,

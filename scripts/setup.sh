@@ -254,8 +254,11 @@ PY
     On a minimal Linux install you may be missing SDL's runtime libraries:
       sudo apt install libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0"
     fi
-    "$PYTHON" -m scorched --version >/dev/null || die "the game failed its own start-up check"
+    "$PYTHON" -m scorched --version >/dev/null || die "Scorched failed its own start-up check"
+    "$PYTHON" -m standing_orders --version >/dev/null ||
+        die "Standing Orders failed its own start-up check"
     good "scorched $("$PYTHON" -m scorched --version | awk '{print $2}') is ready"
+    good "standing orders $("$PYTHON" -m standing_orders --version | awk '{print $2}') is ready"
 fi
 
 # -- 5. what next -----------------------------------------------------------
@@ -265,8 +268,11 @@ cat <<EOF
 
 $C_GREEN$C_BOLD Setup complete.$C_OFF
 
-  Play:              ./scripts/play.sh
-  Headless server:   ./scripts/dedicated-server.sh --bots 2
+  Scorched:          ./scripts/play.sh
+  Standing Orders:   ./scripts/play-orders.sh
+
+  Headless servers:  ./scripts/dedicated-server.sh --bots 2
+                     ./scripts/orders-server.sh --bots 2
 
   Hosting? Other players pick "Find LAN Games", or type your address:
       ${LAN_IP:-<the LAN address of this machine>}

@@ -93,11 +93,23 @@ class Match:
         self._next_pid += 1
         used = {p.color for p in self.state.players.values()}
         color = next((c for c in range(MAX_PLAYERS) if c not in used), 0)
-        player = Player(pid=pid, name=_clean(name), color=color, team=pid,
-                        bot=bot, skill=skill, ready=bot)
+        player = Player(pid=pid, name=self._unique_name(_clean(name)),
+                        color=color, team=pid, bot=bot, skill=skill, ready=bot)
         self.state.players[pid] = player
         self._reassign_teams()
         return player
+
+    def _unique_name(self, name: str) -> str:
+        """Disambiguate a duplicate. Two commanders called Ada is confusing in
+        a game whose entire interface is colour-coded by player."""
+        taken = {p.name for p in self.state.players.values()}
+        if name not in taken:
+            return name
+        for suffix in range(2, 10):
+            candidate = f"{name[:12]} {suffix}"
+            if candidate not in taken:
+                return candidate
+        return name[:12] + " *"
 
     def remove_player(self, pid: int) -> None:
         self.state.players.pop(pid, None)
@@ -136,7 +148,7 @@ class Match:
         self.phase = PHASE_ORDERS
         self.pending = {}
         self._arm_clock()
-        self.note(f"Turn 1 -- {self.state.map.info.name}")
+        self.note(self.state.map.info.name)
 
     def _place_starts(self) -> None:
         players = sorted(self.state.players.values(), key=lambda p: p.pid)
@@ -230,6 +242,19 @@ class Match:
             per_beat = result.vision.get(team, {})
             events = filter_events(result.events, per_beat, team, player.pid,
                                    owner_lookup)
+            # A unit can walk into view mid-turn, and the client has never
+            # heard of it. Ship the identity of everyone who appears in the
+            # events this player actually receives, so the replay can draw
+            # them -- and nobody else, which would leak the fog away.
+            actors = {}
+            for event in events:
+                for key in ("uid", "tgt"):
+                    ident = event.get(key)
+                    unit = self.state.units.get(ident) if ident else None
+                    if unit is not None:
+                        actors[str(unit.uid)] = {"owner": unit.owner,
+                                                 "code": unit.code,
+                                                 "hp": unit.hp}
             end_vision = per_beat.get(SUBTICKS) or team_vision(
                 self.state, team, cache)
             self.last_timelines[player.pid] = {
@@ -237,6 +262,7 @@ class Match:
                 "turn": self.state.turn,
                 "subticks": result.subticks,
                 "events": events,
+                "actors": actors,
                 "state": visible_state(self.state, player.pid, end_vision),
                 "rejected": rejected.get(player.pid, []),
             }
@@ -259,7 +285,6 @@ class Match:
             player.ready = not player.alive
         self.phase = PHASE_ORDERS
         self._arm_clock()
-        self.note(f"Turn {self.state.turn}")
         return True
 
     def check_over(self) -> bool:

@@ -1,11 +1,16 @@
-# Scorched
+# LAN Arcade
 
-A lo-fi, turn-based artillery game in the spirit of **Scorched Earth** — angle,
-power, wind, and a hillside that stops being a hillside. Built to be played
-across a room: a Windows PC and a Raspberry Pi 400 on the same LAN, in the same
-match, at a locked 60 fps on both.
+Two lo-fi multiplayer games built to be played across a room: a Windows PC and
+a Raspberry Pi 400 on the same LAN, in the same match, at a locked 60 fps on
+both.
 
-![Aiming](docs/screen-aiming.png)
+| | |
+| --- | --- |
+| **[Scorched](#scorched--artillery)** | Turn-based artillery. Angle, power, wind, and a hillside that stops being a hillside. |
+| **[Standing Orders](#standing-orders--skirmish-rts)** | A skirmish RTS where everyone plans in secret and the turn plays out at once. |
+
+![Scorched](docs/screen-impact.png)
+![Standing Orders](docs/orders-planning.png)
 
 One dependency (pygame), one command to start, and a **Find LAN Games** button
 so nobody has to read out an IP address.
@@ -16,8 +21,8 @@ so nobody has to read out an IP address.
 
 - [Install](#install)
 - [Playing across the LAN](#playing-across-the-lan)
-- [Controls](#controls)
-- [The game](#the-game)
+- [Scorched — artillery](#scorched--artillery)
+- [Standing Orders — skirmish RTS](#standing-orders--skirmish-rts)
 - [How cross-platform play works](#how-cross-platform-play-works)
 - [Performance on a Pi 400](#performance-on-a-pi-400)
 - [Command line](#command-line)
@@ -28,24 +33,18 @@ so nobody has to read out an IP address.
 
 ## Install
 
-Scorched needs **Python 3.9+** and **pygame 2**. Nothing else — no asset files,
-no build step. The sounds are synthesised at start-up and the graphics are drawn
-in code.
+Both games need **Python 3.9+** and **pygame 2**. Nothing else — no asset
+files, no build step. Sounds are synthesised at start-up and every graphic is
+drawn in code.
 
 There is one setup script per platform. Both are safe to re-run — they verify
-rather than reinstall — and both finish by actually starting pygame and the
-game to prove the install works.
+rather than reinstall — and both finish by actually starting pygame and both
+games to prove the install works.
 
 ### Windows
 
-Double-click **`scripts\setup.bat`**, then **`scripts\play.bat`**.
-
-From a prompt, if you prefer:
-
-```bat
-scripts\setup.bat
-scripts\play.bat
-```
+Double-click **`scripts\setup.bat`**, then **`scripts\play.bat`** (Scorched)
+or **`scripts\play-orders.bat`** (Standing Orders).
 
 `setup.bat` finds your Python (including via the `py` launcher), installs
 pygame, and falls back to a virtual environment in `.venv` if a system install
@@ -56,7 +55,8 @@ be `python` and tells you to install a real one.
 
 ```bash
 ./scripts/setup.sh
-./scripts/play.sh
+./scripts/play.sh            # Scorched
+./scripts/play-orders.sh     # Standing Orders
 ```
 
 `setup.sh` picks whichever of the three sane approaches suits the machine:
@@ -75,54 +75,49 @@ enough.
 Force a particular approach with `--venv`, `--apt` or `--system`; see
 `./scripts/setup.sh --help`.
 
-### By hand
-
-The only dependency is pygame, so this is enough anywhere:
-
-```bash
-python3 -m pip install pygame-ce      # or: sudo apt install python3-pygame
-python3 -m scorched
-```
-
 ---
 
 ## Playing across the LAN
 
-**On the machine hosting:**
+Identical for both games.
 
-1. `Host a Game`
-2. Set the rules, add a computer player or two, `Start Hosting`
-3. The lobby prints the address other players need. Press `Ready`, then `START`.
+**On the machine hosting:** `Host a Game`, set the rules, add a computer player
+or two, `Start Hosting`. The lobby prints the address other players need.
 
-**On every other machine:**
-
-1. `Find LAN Games` — the host appears within a second or two
-2. `Join`
+**On every other machine:** `Find LAN Games`, then `Join`.
 
 If discovery is blocked (some managed or guest networks drop UDP broadcast),
-use `Connect by Address` and type what the host's lobby screen showed, e.g.
+use `Connect by Address` and type what the host's lobby showed, e.g.
 `192.168.1.40`. A hostname works too: `raspberrypi.local`.
 
-The host needs **TCP port 27015** open, plus **UDP 27016** for the server
-browser. On Windows the first launch pops the usual firewall prompt — allow it
-on *Private networks*. To open the ports up front instead, run
-`scripts\setup.bat --firewall` from an Administrator prompt. On Raspberry Pi OS
-nothing is firewalled by default.
+Hosts need **TCP 27015** (Scorched) or **TCP 27019** (Standing Orders) open,
+plus **UDP 27016** for the server browser, which both games share — each server
+tags itself so the two browsers never list each other's games. On Windows the
+first launch pops the usual firewall prompt; allow it on *Private networks*, or
+run `scripts\setup.bat --firewall` from an Administrator prompt to open the
+ports up front. On Raspberry Pi OS nothing is firewalled by default.
 
-### Dedicated server
+### Dedicated servers
 
-To let the match outlive everyone's client — or to make the Pi host without
-also rendering — run it headless. This needs no display and no pygame at all:
+To let a match outlive everyone's client — or to make the Pi host without also
+rendering — run it headless. Neither needs a display or pygame at all:
 
 ```bash
 python3 -m scorched server --bots 2 --rounds 5
+python3 -m standing_orders server --bots 2 --map crossroads --teams
 ```
-
-Players then join it exactly as above.
 
 ---
 
-## Controls
+## Scorched — artillery
+
+![Aiming](docs/screen-aiming.png)
+
+Two to eight tanks dropped onto a randomly generated landscape. Everyone takes
+a turn; last tank standing wins the round. Between rounds you spend your
+winnings.
+
+### Controls
 
 | Key | Action |
 | --- | --- |
@@ -142,14 +137,6 @@ Aim is deliberately *unassisted*: the short dotted line shows the launch
 direction only, never where the shell will land. Reading the wind is the game.
 
 ---
-
-## The game
-
-![Impact](docs/screen-impact.png)
-
-Two to eight tanks, dropped onto a randomly generated landscape. Everyone takes
-a turn; last tank standing wins the round. Between rounds you spend your
-winnings.
 
 **Weapons.** Baby Missiles are free and forever. Beyond that: Missiles, Baby
 Nukes and Nukes for straightforward destruction; **MIRV** splits into five
@@ -180,57 +167,144 @@ after 55 turns, so a round always ends.
 
 ---
 
+## Standing Orders — skirmish RTS
+
+![Planning](docs/orders-planning.png)
+
+Build times and unit speeds are measured in **turns, not seconds**. Every turn,
+all players secretly and simultaneously queue orders for their units and
+buildings. When everyone commits (or the clock runs out), the server plays the
+whole turn out at once and everybody watches a short replay of what their side
+witnessed.
+
+Nobody ever needs faster hands than anybody else. The game is about planning
+and reading your opponent, not clicking speed — which is exactly what makes it
+work across a wide range of ages at one table.
+
+### Controls
+
+| Input | Action |
+| --- | --- |
+| Left-click | Select a unit or building |
+| Drag | Box-select an army |
+| Right-click | Move there |
+| Shift + right-click | Attack-move there — engage anything met on the way |
+| `Tab` | Select your whole army |
+| `Enter` | Commit your orders |
+| `Space` | Skip a replay |
+| `T` | Chat · `Esc` Pause · `F11` Fullscreen |
+
+### The rules
+
+**One resource, Supply.** Your Command Post produces a trickle; resource nodes
+produce far more. Capture is *persistent* — stand on a node once and it keeps
+paying after you march on, so taking ground is worth doing and holding it is
+worth defending.
+
+**Four units in a rock-paper-scissors triangle**, plus a generalist:
+
+| Unit | Cost | Build | Speed | HP | Attack | Range | Beats |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Scout | 3 | 1 turn | 3 | 12 | 2 | 1 | Gunner |
+| Trooper | 5 | 2 turns | 2 | 24 | 4 | 1 | — |
+| Gunner | 7 | 2 turns | 2 | 15 | 5 | 2 | Bruiser |
+| Bruiser | 9 | 3 turns | 1 | 48 | 6 | 1 | Scout |
+
+Countering gives ×1.5 damage out and ×0.5 back. Gunners and Bruisers need a
+**Barracks**, so rushing one is a real opening decision against simply making
+more Troopers.
+
+**An army cap of 12.** This is the most important number in the game: without
+it, two even sides reinforce exactly as fast as they die and the match never
+ends. With it, losing a battle actually costs you something.
+
+**Fog of war**, shared with your team. Ground you have scouted stays drawn but
+dimmed; ground you have never seen is black. Enemies you have seen and lost
+track of linger as ghosts at their last known position.
+
+**Win by destroying every enemy Command Post.** There is no turn limit.
+
+### Maps
+
+Hand-authored, as plain text — a new map needs a text editor and nothing else:
+
+```
+!name Crossroads
+!players 4
+!teams yes
+..1......%%.......2.....
+....$..............$....
+.....####....####.......
+```
+
+`.` open · `#` rock · `~` water · `%` forest (walkable, blocks sight, costs
+double) · `$` resource node · `1`-`4` spawns. Team play pairs spawns 1&3
+against 2&4, so a team map puts those pairs on opposite sides.
+
+Three ship with the game: **Cross Duel** (1v1), **Crossroads** (tight
+four-way), and **Dry Basin** (four-way split by a river). Drop a new `.map`
+file in `standing_orders/maps/` and it appears in the lobby.
+
+### Bots
+
+Four skill levels, from *Novice* to *Cyborg*. They play **under the same fog as
+everyone else** — a cheating bot makes scouting pointless — and differ by
+restraint and discipline rather than by information: a Novice dribbles units
+forward and ignores what it is fighting, while a Veteran masses an army,
+counter-picks its production, and comes home when its base is threatened.
+
+Veteran beats Novice about 13 games in 14.
+
+---
+
 ## How cross-platform play works
 
-An x86-64 Windows box and a 32-bit ARM Pi do not have to agree about floating
-point here, because **they never both simulate anything**.
+An x86-64 Windows box and a 32-bit ARM Pi never have to agree about floating
+point, because **they never both simulate anything**.
 
-The server is authoritative. When you fire, it runs the entire shot to
-completion immediately and produces a **timeline**: a list of events, each
-stamped with the animation frame it happens on — trajectory points, explosions,
-terrain edits, damage, deaths. That timeline is broadcast, and every client just
-plays it back.
+The server is authoritative. In Scorched, firing runs the entire shot to
+completion and produces a frame-stamped **timeline** of events. In Standing
+Orders, committing orders resolves the whole turn beat by beat and produces the
+same kind of timeline, cut down per player to what their side could see. Either
+way the timeline is broadcast and every client simply plays it back.
 
 This buys three things:
 
-- **No desync is possible.** Nothing is computed twice, so nothing can disagree.
-  The test suite asserts that two independent clients replaying the same event
-  list end up with byte-identical terrain.
-- **Lag never stutters.** Network jitter delays when the animation *starts*, not
-  how it runs. A 200 ms hiccup mid-flight is invisible.
-- **The slow machine sets no pace.** The server waits for clients to report the
-  animation finished, with a grace period; a Pi that finishes late is covered,
-  and a Pi that never answers does not hang the match.
+- **No desync is possible.** Nothing is computed twice, so nothing can
+  disagree. The tests assert that two independent clients replaying the same
+  event list reach byte-identical results.
+- **Lag never stutters.** Network jitter delays when an animation *starts*, not
+  how it runs.
+- **The slow machine sets no pace.** Clients report when they have finished
+  watching, with a grace period; a Pi that finishes late is covered, and one
+  that never answers does not hang the match.
 
-Terrain itself is a column heightmap edited with **integer-only** arithmetic, so
-replaying the same crater on two platforms cannot drift even in principle.
+Fog of war falls out almost free: since clients only ever receive a curated
+replay, hiding information is a filtering problem rather than a netcode one.
 
-The wire protocol is length-prefixed JSON over TCP with `TCP_NODELAY`. It is
-verbose and completely portable, which is the right trade for a game that sends
-a few kilobytes per turn.
+Shared plumbing lives in `lanlib/` — the wire protocol (length-prefixed JSON
+over TCP with `TCP_NODELAY`), LAN discovery, the widget kit, and the audio
+synthesiser — so the next game starts with all of that already working.
 
 ---
 
 ## Performance on a Pi 400
 
-The playfield is a fixed 640×400 that the display scales up. Two things keep the
-frame budget small:
+Both games render a fixed 640x400 playfield that the display scales up.
+Scorched composites sky and terrain into a single surface and repaints only the
+columns a shell disturbed. Standing Orders composites the tile map once, since
+terrain never changes, and memoises line-of-sight discs so recomputing fog
+twelve times a turn barely registers.
 
-- The sky and the dirt are composited **once** into a single surface. Drawing
-  the world costs one opaque blit per frame, not 640 column draws.
-- When a shell moves dirt, only the columns it touched are repainted. A Nuke
-  dirties about 130 columns out of 640.
+Measured worst case is well under a millisecond of Python per frame on a
+desktop, and a whole Standing Orders turn resolves in about 18 ms.
 
-Measured worst case (eight tanks, a MIRV in flight, full particle load) is well
-under a millisecond of Python per frame on a desktop, leaving roughly an order
-of magnitude of headroom for the Pi.
-
-If the Pi still feels sluggish, the cost is almost certainly SDL scaling 640×400
-up to a 1080p display in software. Two fixes:
+If a Pi still feels sluggish, the cost is almost certainly SDL scaling 640x400
+up to a 1080p display in software:
 
 ```bash
-./scripts/play.sh --no-scale     # plain unscaled window, no stretch at all
-./scripts/play.sh --fullscreen
+./scripts/play.sh --no-scale
+./scripts/play-orders.sh --fullscreen
 ```
 
 ---
@@ -238,29 +312,21 @@ up to a 1080p display in software. Two fixes:
 ## Command line
 
 ```
-python -m scorched [options]
+python -m scorched [--name N] [--host] [--connect HOST[:PORT]]
+                   [--bots N] [--skill novice|moderate|expert|cyborg]
+                   [--fullscreen] [--no-sound] [--no-scale]
 
-  --name NAME          your callsign
-  --host               start hosting immediately
-  --connect HOST[:PORT]  join a server immediately
-  --bots N             computer players to add when hosting
-  --skill LEVEL        novice | moderate | expert | cyborg
-  --fullscreen
-  --no-sound
-  --no-scale           plain 640x400 window (fastest fallback)
-```
+python -m scorched server [--port P] [--name N] [--bots N] [--skill S]
+                          [--rounds N] [--turn-time S] [--wind N]
+                          [--terrain STYLE] [--walls none|rebound|wrap]
 
-```
-python -m scorched server [options]
+python -m standing_orders [--name N] [--host] [--connect HOST[:PORT]]
+                          [--bots N] [--skill novice|moderate|veteran|cyborg]
+                          [--map NAME] [--teams]
+                          [--fullscreen] [--no-sound] [--no-scale]
 
-  --port PORT          default 27015
-  --name NAME          how the game appears in the server browser
-  --bots N             --skill LEVEL
-  --rounds N           --turn-time SECONDS
-  --wind N             maximum wind strength
-  --terrain STYLE      hills | mountains | valley | plateau | canyon | flat | random
-  --walls MODE         none | rebound | wrap
-  --no-announce        stay out of the LAN server browser
+python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
+                                 [--map NAME] [--teams] [--order-time S]
 ```
 
 ---
@@ -269,53 +335,54 @@ python -m scorched server [options]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 107 tests, ~50s
-python3 -m pyflakes scorched tests
+python3 -m pytest          # 210 tests
+python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 
-The tests run headless against SDL's dummy video and audio drivers, so they work
-on a build machine with no display and no sound card.
+The tests run headless against SDL's dummy video and audio drivers, so they
+work on a build machine with no display and no sound card.
 
-Layout:
-
-| Module | Role |
+| Package | Role |
 | --- | --- |
-| `scorched/protocol.py` | Framing, sockets, the connection object both ends use |
-| `scorched/terrain.py` | Heightmap generation and integer-exact destruction |
-| `scorched/physics.py` | Projectile simulation; produces the shot timeline |
-| `scorched/weapons.py` | The armoury, as data |
-| `scorched/game.py` | Rules: turns, rounds, economy, win conditions |
-| `scorched/server.py` | Authoritative server and match loop |
-| `scorched/ai.py` | Bot aiming and shopping |
-| `scorched/discovery.py` | UDP LAN beacon and scanner |
-| `scorched/client/` | Rendering, animation, synthesised audio, front end |
+| `lanlib/` | Protocol, LAN discovery, widget kit, audio synthesis, shared theme |
+| `scorched/` | Artillery: terrain, ballistics, weapons, rules, server, client |
+| `standing_orders/` | RTS: grid, units, turn resolver, fog, rules, server, client |
+
+Standing Orders' turn resolver (`standing_orders/resolve.py`) is the piece to
+read first: everything else exists to feed it orders or to draw what it
+decided.
+
+### Known tuning items
+
+Four-player all-bot free-for-all in Standing Orders is still a slow multi-way
+standoff — every bot turtles while the others fight. 1v1 and 2v2 settle in a
+median of roughly 32-42 turns. Human players are far more decisive, so this
+mostly matters if you want to watch four bots play each other.
 
 ---
 
 ## Troubleshooting
 
 **"Find LAN Games" shows nothing.** The two machines are probably not on the
-same subnet — guest Wi-Fi networks and some mesh routers isolate clients from
-each other. Check that both can `ping` the other, then use `Connect by Address`.
-Some Windows setups also drop the global broadcast; the scanner tries per-subnet
-broadcasts too, but a firewall rule on UDP 27016 will still stop it.
+same subnet — guest Wi-Fi and some mesh routers isolate clients from each
+other. Check both can `ping` the other, then use `Connect by Address`. A
+firewall rule on UDP 27016 will also stop it.
 
 **Connection refused.** The host has not pressed `Start Hosting` yet, or the
-firewall is blocking TCP 27015.
+firewall is blocking TCP 27015 / 27019.
 
 **"Match already in progress."** Joining mid-match is not supported; the host
-returns to the lobby after the final round, or can press `Play Again`.
+returns to the lobby after the match, or can press `Play Again`.
 
-**No sound.** Expected on a Pi with HDMI audio not yet configured. The game
-detects this and runs silently rather than failing. `--no-sound` skips audio
+**No sound.** Expected on a Pi with HDMI audio not yet configured. Both games
+detect this and run silently rather than failing. `--no-sound` skips audio
 entirely.
 
 **`error: externally-managed-environment` on Raspberry Pi OS.** That is
-Bookworm protecting the system Python. `./scripts/setup.sh` avoids it entirely —
-it uses apt where it can and a virtual environment otherwise.
+Bookworm protecting the system Python. `./scripts/setup.sh` avoids it entirely.
 
-**Typing `python` on Windows opens the Microsoft Store.** That is a placeholder,
-not an install. Get the real thing from
+**Typing `python` on Windows opens the Microsoft Store.** That is a
+placeholder, not an install. Get the real thing from
 [python.org](https://www.python.org/downloads/) and tick *Add python.exe to
 PATH*. `scripts\setup.bat` detects this case and says so.
 
@@ -328,4 +395,6 @@ PATH*. `scripts\setup.bat` detects this case and says so.
 MIT — see [LICENSE](LICENSE).
 
 Scorched is an original implementation inspired by Wendell Hicken's *Scorched
-Earth* (1991). It shares no code or assets with it.
+Earth* (1991). Standing Orders is an original game in the WEGO
+(simultaneous-turn) wargame tradition of *Combat Mission* and *Frozen Synapse*.
+Neither shares code or assets with any of them.

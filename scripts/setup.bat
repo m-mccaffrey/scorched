@@ -113,7 +113,9 @@ if not "!VERIFY_RC!"=="0" goto pygame_broken
 
 %PY% -m scorched --version >nul 2>nul
 if errorlevel 1 goto game_broken
-echo     the game starts
+%PY% -m standing_orders --version >nul 2>nul
+if errorlevel 1 goto game_broken
+echo     both games start
 
 REM --- 5. optional firewall rules -------------------------------------------
 if defined DO_FIREWALL call :firewall
@@ -126,8 +128,11 @@ if not defined LANIP set "LANIP=<the LAN address of this machine>"
 echo.
 echo  Setup complete.
 echo.
-echo    Play:             scripts\play.bat
-echo    Headless server:  scripts\dedicated-server.bat --bots 2
+echo    Scorched:         scripts\play.bat
+echo    Standing Orders:  scripts\play-orders.bat
+echo.
+echo    Headless servers: scripts\dedicated-server.bat --bots 2
+echo                      scripts\orders-server.bat --bots 2
 echo.
 echo    Hosting? Other players pick "Find LAN Games", or type your address:
 echo        !LANIP!

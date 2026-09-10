@@ -78,6 +78,8 @@ class App:
     def __init__(self, name: str = "", fullscreen: bool = False,
                  sound: bool = True, scaled: bool = True) -> None:
         pygame.init()
+        # Caches from a previously closed game hold dead Font objects.
+        ui.reset()
         pygame.display.set_caption("Scorched - LAN Artillery")
         # SCALED lets SDL stretch the 640x400 playfield to the window, on the
         # GPU where one is available. On a Pi whose SDL falls back to software
@@ -480,7 +482,12 @@ class App:
 
         def work():
             try:
-                self._servers = discovery.scan(1.4)
+                found = discovery.scan(1.4)
+                # The beacon port is shared with the other games in this
+                # collection, so only list servers running this one. Older
+                # servers predate the tag and are assumed to be Scorched.
+                self._servers = [s for s in found
+                                 if s.get("game") in (None, "scorched")]
             except OSError:
                 self._servers = []
             finally:

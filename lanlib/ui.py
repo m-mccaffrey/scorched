@@ -33,7 +33,14 @@ def text(msg: str, size: int = 16, color=UI_TEXT) -> pygame.Surface:
     if surf is None:
         if len(_TEXT_CACHE) > _CACHE_LIMIT:
             _TEXT_CACHE.clear()
-        surf = font(size).render(msg, False, color)
+        try:
+            surf = font(size).render(msg, False, color)
+        except pygame.error:
+            # A cached Font does not survive pygame.quit(), which happens when
+            # one game in this collection is closed and another opened in the
+            # same process. Drop everything and build it again.
+            reset()
+            surf = font(size).render(msg, False, color)
         _TEXT_CACHE[key] = surf
     return surf
 
@@ -158,6 +165,18 @@ class TextInput:
         dest.set_clip(None)
         pygame.draw.rect(dest, UI_ACCENT if self.focused else UI_PANEL_LO,
                          self.rect, 1)
+
+
+def reset() -> None:
+    """Forget every cached font and glyph.
+
+    Call this after ``pygame.init()`` when the display may have been torn down
+    since -- Font objects created before a ``pygame.quit()`` are dead, and a
+    cache full of them raises "font module quit since font created" on the
+    next render.
+    """
+    _FONTS.clear()
+    _TEXT_CACHE.clear()
 
 
 def clear_caches() -> None:
