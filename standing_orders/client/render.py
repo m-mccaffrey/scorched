@@ -306,6 +306,42 @@ class Renderer:
         pygame.draw.rect(dest, colour, self.board.rect(tile), 1)
 
 
+TOOLTIP_MAX_W = 250
+
+
+def draw_tooltip(dest: pygame.Surface, lines: list, near) -> None:
+    """A small panel of (text, colour, size) rows, kept on screen.
+
+    Flips to the other side of the cursor rather than being clipped, because a
+    tooltip that runs off the edge is worse than none.
+    """
+    if not lines:
+        return
+    rows = [(str(text), colour, size) for text, colour, size in lines]
+    height = 6 + sum(size - 3 for _text, _c, size in rows)
+    # Size to the content rather than to a guess: a fixed width either clips
+    # the longest blurb or leaves a wide empty box beside a two-word label.
+    width = min(TOOLTIP_MAX_W,
+                max(ui.text(text, size).get_width() for text, _c, size in rows) + 12)
+    x = near[0] + 12
+    y = near[1] + 10
+    if x + width > SCREEN_W - 2:
+        x = near[0] - width - 8
+    if y + height > SCREEN_H - 2:
+        y = near[1] - height - 8
+    x = max(2, x)
+    y = max(2, y)
+    rect = pygame.Rect(x, y, width, height)
+    panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+    panel.fill((14, 16, 24, 240))
+    dest.blit(panel, rect.topleft)
+    pygame.draw.rect(dest, UI_PANEL_HI, rect, 1)
+    cy = rect.y + 3
+    for text, colour, size in rows:
+        ui.draw_text(dest, text, rect.x + 6, cy, size, colour)
+        cy += size - 3
+
+
 _SHADOWS: dict = {}
 
 

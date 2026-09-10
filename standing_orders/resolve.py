@@ -102,13 +102,30 @@ def apply_orders(state: MatchState, orders: dict, result: TurnResult) -> dict:
     def reject(pid: int, why: str) -> None:
         rejected.setdefault(pid, []).append(why)
 
-    # Everything stands still unless told otherwise -- a unit given no order
-    # this turn holds its ground rather than continuing last turn's march,
-    # which keeps a turn's plan readable to the player who wrote it.
-    for unit in state.units.values():
-        unit.path = []
-        unit.stance = "hold"
-        unit.move_points = 0
+    # Orders stand until they are changed. Wiping every path at the start of a
+    # turn meant a scout told to cross the map stopped after one turn, which is
+    # not what anybody means by "go there"; it also meant a unit never carried
+    # movement progress between turns, so a speed-1 Bruiser could never enter a
+    # forest at all -- 12 points a turn against a 24-point tile.
+    #
+    # Only units that receive a fresh order this turn are reset.
+    reordered = set()
+    for player_orders in orders.values():
+        if not isinstance(player_orders, list):
+            continue
+        for order in player_orders:
+            if isinstance(order, dict) and order.get("o") in ("move", "attack",
+                                                              "hold"):
+                try:
+                    reordered.add(int(order.get("uid", -1)))
+                except (TypeError, ValueError):
+                    continue
+    for uid in reordered:
+        unit = state.units.get(uid)
+        if unit is not None:
+            unit.path = []
+            unit.stance = "hold"
+            unit.move_points = 0
 
     occupancy = state.occupancy()
 
@@ -402,12 +419,31 @@ class Resolver:
                     self._spawn(beat, building, entry[0])
         self._capture_nodes(beat)
         self._pay_income(beat)
+        self._settle_eliminations(beat)
+
+    def _settle_eliminations(self, beat: int) -> None:
+        """Knock out anyone who has lost their Command Post, and their army.
+
+        Leaving a defeated commander's units on the board is worse than it
+        sounds: nobody ever files orders for them again, so they stand where
+        their last order left them -- immortal obstacles that still shoot at
+        passers-by and can never win. The command post going up takes the
+        force with it.
+        """
         before = {p.pid for p in self.state.players.values() if p.alive}
         self.state.prune()
         after = {p.pid for p in self.state.players.values() if p.alive}
         for pid in sorted(before - after):
             self.result.eliminated.append(pid)
             self.result.add(beat, "eliminated", pid=pid)
+            for unit in [u for u in self.state.units.values()
+                         if u.owner == pid and u.alive]:
+                self._kill_unit(beat, unit)
+            for building in [b for b in self.state.buildings.values()
+                             if b.owner == pid and b.alive]:
+                self._kill_building(beat, building)
+        if before != after:
+            self.state.prune()
 
     def _spawn(self, beat: int, building: Building, code: str) -> None:
         tile = self._free_tile_near(building.tile)

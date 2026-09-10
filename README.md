@@ -192,7 +192,13 @@ work across a wide range of ages at one table.
 | `Tab` | Select your whole army |
 | `Enter` | Commit your orders |
 | `Space` | Skip a replay |
+| Hover anything | A tooltip explaining it — terrain, units, buildings, nodes |
 | `T` | Chat · `Esc` Pause · `F11` Fullscreen |
+
+**Orders stand until you change them.** Send a Scout across the map and it keeps
+walking, turn after turn; its remaining route is drawn dimmed so you can tell
+"already marching" from "about to be told to". A new order replaces the old one
+immediately, and `Hold` cancels it.
 
 ### The rules
 

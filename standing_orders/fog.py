@@ -104,8 +104,15 @@ def visible_state(state, viewer_pid: int, vision: frozenset) -> dict:
     for unit in state.units.values():
         if not unit.alive:
             continue
-        if state.team_of(unit.owner) == team or unit.tile in vision:
-            units.append(unit.to_wire())
+        friendly = state.team_of(unit.owner) == team
+        if not friendly and unit.tile not in vision:
+            continue
+        wire = unit.to_wire()
+        if not friendly:
+            # Seeing a unit tells you where it is, not what it was told to do.
+            wire.pop("path", None)
+            wire.pop("stance", None)
+        units.append(wire)
     buildings = []
     for building in state.buildings.values():
         if not building.alive:

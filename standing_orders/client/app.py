@@ -25,12 +25,14 @@ from lanlib.theme import (UI_ACCENT, UI_BG, UI_DIM, UI_GOOD,
                           shade, team_color)
 
 from ..game import Settings, available_maps
-from ..grid import TileMap, find_path
+from ..grid import TileMap, describe, find_path
 from ..server import GAME_ID, SO_PORT, Server
 from ..state import MAX_PLAYERS
-from ..units import BUILDING, UNIT, UNIT_CAP, catalogue
+from ..units import (BUILD_RADIUS, BUILDING, NODE_INCOME, UNIT, UNIT_CAP,
+                     catalogue)
 from .audio import OrdersSfx
-from .render import HUD_H, PANEL_W, SCREEN_H, SCREEN_W, TOP_H, Renderer
+from .render import (HUD_H, PANEL_W, SCREEN_H, SCREEN_W, TOP_H, Renderer,
+                     draw_tooltip)
 from .replay import ReplayPlayer
 from .view import WorldView
 
@@ -99,6 +101,9 @@ class App:
         self._name = ui.TextInput((0, 0, 200, 22), self.player_name, 14)
         self._bots = 1
         self._skill = "moderate"
+        #: (rect, lines) pairs collected while drawing; whichever the pointer
+        #: is over gets a tooltip once the frame is otherwise finished.
+        self._tips: list = []
 
     @staticmethod
     def _open_display(flags: int) -> pygame.Surface:
@@ -753,6 +758,7 @@ class App:
     # =====================================================================
     def _draw(self) -> None:
         self._buttons = []
+        self._tips = []
         painter = getattr(self, f"_draw_{self.mode}", self._draw_menu)
         painter()
         if self.chat_input is not None:
@@ -761,6 +767,10 @@ class App:
         for button in self._buttons:
             button.update(self.mouse)
             button.draw(self.screen)
+        for rect, lines in self._tips:
+            if rect.collidepoint(self.mouse):
+                draw_tooltip(self.screen, lines, self.mouse)
+                break
         if self.error and time.monotonic() < self.error_until:
             y = SCREEN_H - HUD_H - 14 if self.mode in ("game", "pause") else SCREEN_H - 14
             ui.draw_text(self.screen, self.error, SCREEN_W // 2, y, 15, UI_WARN,
@@ -956,6 +966,7 @@ class App:
         if self.phase == "orders" and self.replay is None:
             self._draw_orders_overlay()
         self._draw_top()
+        self._collect_board_tip()
         self._draw_panel()
         self._draw_hud()
         self._draw_chat(SCREEN_H - HUD_H - 6, limit=3)
@@ -983,6 +994,18 @@ class App:
 
     def _draw_orders_overlay(self) -> None:
         board = self.renderer.board
+        colour = team_color(self.colors.get(self.my_pid, 0))
+        # Orders stand until changed, so a unit still walking out last turn's
+        # march shows its remaining route -- dimmed, to separate "already
+        # marching" from "about to be told to".
+        for unit in self.view.mine(self.my_pid):
+            if unit["uid"] in self.unit_orders:
+                continue
+            remaining = [tuple(t) for t in unit.get("path", [])]
+            if remaining:
+                self.renderer.draw_order_path(
+                    self.screen, (unit["x"], unit["y"]), remaining,
+                    shade(colour, 0.55), unit.get("stance") == "attack")
         for uid, order in self.unit_orders.items():
             unit = self.view.units.get(uid)
             if unit is None:
@@ -1003,6 +1026,78 @@ class App:
         if self.drag_anchor is not None:
             self.renderer.draw_selection_box(self.screen, self.drag_anchor,
                                              self.mouse)
+
+    def _collect_board_tip(self) -> None:
+        """Describe whatever the pointer is over, so nobody has to decode the
+        art by experiment."""
+        board = self.renderer.board
+        tile = board.to_tile(self.mouse)
+        if tile is None:
+            return
+        known = tile in self.view.explored
+        lines: list = []
+
+        unit = self.view.unit_at(tile) or self.view.remembered.get(
+            next((uid for uid, g in self.view.remembered.items()
+                  if (g["x"], g["y"]) == tile), None))
+        building = self.view.building_at(tile)
+
+        if unit is not None:
+            info = UNIT[unit["code"]]
+            owner = self.players.get(unit["owner"], {}).get("name", "?")
+            mine = unit["owner"] == self.my_pid
+            lines.append((f"{info.name}  ({owner})", team_color(
+                self.colors.get(unit["owner"], 0)), 17))
+            lines.append((f"{unit.get('hp', info.hp)}/{info.hp} hp   "
+                          f"speed {info.speed}   range {info.reach}",
+                          UI_TEXT, 14))
+            if info.beats:
+                lines.append((f"Strong against {UNIT[info.beats].name}",
+                              UI_GOOD, 14))
+            loser = next((u.name for u in UNIT.values() if u.beats == info.code),
+                         None)
+            if loser:
+                lines.append((f"Weak against {loser}", UI_WARN, 14))
+            if unit.get("ghost"):
+                lines.append(("Last known position", UI_DIM, 13))
+            elif mine:
+                lines.append((info.blurb, UI_DIM, 13))
+        elif building is not None:
+            info = BUILDING[building["code"]]
+            owner = self.players.get(building["owner"], {}).get("name", "?")
+            lines.append((f"{info.name}  ({owner})", team_color(
+                self.colors.get(building["owner"], 0)), 17))
+            if building.get("under"):
+                lines.append((f"Under construction: {building['under']} turns",
+                              UI_ACCENT, 14))
+            else:
+                lines.append((f"{building['hp']}/{info.hp} hp", UI_TEXT, 14))
+                if info.produces:
+                    made = ", ".join(UNIT[c].name for c in info.produces)
+                    lines.append((f"Trains {made}", UI_TEXT, 14))
+                if info.income:
+                    lines.append((f"+{info.income} supply each turn", UI_GOOD, 14))
+            if building["code"] == "base":
+                lines.append(("Lose it and you are out", UI_DIM, 13))
+        else:
+            char = board.map.at(*tile)
+            name, note = describe(char)
+            lines.append((name, UI_TEXT, 17))
+            if note:
+                lines.append((note, UI_DIM, 14))
+            if board.map.is_node(tile[0], tile[1]):
+                holder = self.view.node_owner.get(tile)
+                if holder is None:
+                    lines.append(("Unclaimed", UI_ACCENT, 14))
+                else:
+                    who = self.players.get(holder, {}).get("name", "?")
+                    lines.append((f"Held by {who}", team_color(
+                        self.colors.get(holder, 0)), 14))
+                lines.append((f"+{NODE_INCOME} supply each turn", UI_GOOD, 14))
+            if not known:
+                lines.append(("Unscouted", UI_DIM, 13))
+
+        self._tips.append((board.rect(tile), lines))
 
     def _draw_top(self) -> None:
         strip = pygame.Surface((SCREEN_W, TOP_H), pygame.SRCALPHA)
@@ -1075,6 +1170,7 @@ class App:
             ui.draw_text(self.screen, unit.blurb[:30], rect.x + 5, rect.y + 14, 11,
                          UI_DIM)
             self._button(rect, "", f"train:{code}", hidden=True, enabled=affordable)
+            self._tips.append((rect, self._unit_tip(code)))
             y += 29
         if building["code"] == "base":
             y += 4
@@ -1086,6 +1182,28 @@ class App:
             ui.draw_text(self.screen, f"{barracks.cost}s", rect.right - 5,
                          rect.y + 4, 13, UI_DIM, anchor="topright")
             self._button(rect, "", "place:barracks", hidden=True)
+            self._tips.append((rect, [
+                (barracks.name, UI_ACCENT, 17),
+                (f"{barracks.cost} supply   {barracks.build_turns} turns to build",
+                 UI_TEXT, 14),
+                ("Unlocks Gunners and Bruisers", UI_GOOD, 14),
+                (f"Place within {BUILD_RADIUS} tiles of your buildings", UI_DIM, 13),
+            ]))
+
+    def _unit_tip(self, code: str) -> list:
+        info = UNIT[code]
+        lines = [(info.name, UI_ACCENT, 17),
+                 (f"{info.cost} supply   {info.build_turns} turn"
+                  f"{'s' if info.build_turns != 1 else ''} to build", UI_TEXT, 14),
+                 (f"{info.hp} hp   attack {info.attack}   speed {info.speed}"
+                  f"   range {info.reach}", UI_TEXT, 14)]
+        if info.beats:
+            lines.append((f"Strong against {UNIT[info.beats].name}", UI_GOOD, 14))
+        loser = next((u.name for u in UNIT.values() if u.beats == code), None)
+        if loser:
+            lines.append((f"Weak against {loser}", UI_WARN, 14))
+        lines.append((info.blurb, UI_DIM, 13))
+        return lines
 
     def _draw_selection(self, panel, x, y) -> None:
         units = [self.view.units[uid] for uid in sorted(self.selected)

@@ -39,6 +39,23 @@ _BLOCKS_SIGHT = {ROCK, FOREST}
 NEIGHBOURS = ((0, -1), (1, 0), (0, 1), (-1, 0))
 
 
+#: Human-readable terrain, for the hover tooltip. New players should never
+#: have to work out what a coloured square means by experiment.
+TERRAIN_INFO = {
+    OPEN: ("Open ground", "Easy going."),
+    ROCK: ("Rock", "Impassable. Blocks line of sight."),
+    WATER: ("Water", "Impassable. You can see across it."),
+    FOREST: ("Forest", "Blocks sight. Costs double to cross."),
+    NODE: ("Resource node", "Stand on it once to claim it."),
+}
+
+
+def describe(char: str) -> tuple[str, str]:
+    if char in SPAWNS:
+        return ("Starting position", "Where a commander began.")
+    return TERRAIN_INFO.get(char, ("Open ground", ""))
+
+
 class MapError(Exception):
     """A map file that cannot be used as written."""
 

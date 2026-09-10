@@ -129,3 +129,28 @@ def test_a_player_never_receives_events_from_the_dark():
                 continue
             assert any(t in vision for t in tiles), \
                 f"player {pid} was told about {event} in the dark"
+
+
+def test_seeing_an_enemy_does_not_reveal_its_orders():
+    """Position is observable; intent is not.
+
+    Unit.to_wire carries the remaining path and stance, which would hand the
+    enemy's whole plan to anyone who spotted a single scout.
+    """
+    state = arena()
+    state.add_unit(0, "scout", 6, 5)
+    theirs = state.add_unit(1, "trooper", 7, 5)
+    theirs.path = [(8, 5), (9, 5), (10, 5)]
+    theirs.stance = "attack"
+    mine = state.add_unit(0, "trooper", 5, 5)
+    mine.path = [(4, 5)]
+
+    vision = team_vision(state, 0, VisionCache(state.map))
+    view = visible_state(state, 0, vision)
+    by_uid = {u["uid"]: u for u in view["units"]}
+
+    assert theirs.uid in by_uid, "the enemy should be visible"
+    assert "path" not in by_uid[theirs.uid]
+    assert "stance" not in by_uid[theirs.uid]
+    # Your own orders still come back, because the client draws them.
+    assert by_uid[mine.uid]["path"] == [[4, 5]]

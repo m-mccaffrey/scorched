@@ -21,6 +21,9 @@ def arena(width=20, height=10, players=2):
     for pid in range(players):
         state.players[pid] = Player(pid=pid, name=f"P{pid}", team=pid,
                                     color=pid, supply=30)
+        # Every player needs a Command Post or they are eliminated at the end
+        # of the first turn and stop receiving orders.
+        state.add_building(pid, "base", 1 + pid * 2, height - 1)
     return state
 
 
@@ -84,13 +87,16 @@ def test_faster_units_win_a_race_to_a_tile():
     assert scout.tile == (4, 5)
 
 
-def test_units_hold_when_given_no_order():
+def test_a_unit_with_no_orders_and_nowhere_to_go_stays_put():
     state = arena()
     trooper = state.add_unit(0, "trooper", 5, 5)
-    resolve_turn(state, {0: [{"o": "move", "uid": trooper.uid, "to": [9, 5]}]})
-    moved_to = trooper.tile
     resolve_turn(state, {})
-    assert trooper.tile == moved_to, "a unit should not continue last turn's march"
+    assert trooper.tile == (5, 5)
+    # And it does not drift once it has finished a march either.
+    resolve_turn(state, {0: [{"o": "move", "uid": trooper.uid, "to": [7, 5]}]})
+    assert trooper.tile == (7, 5)
+    resolve_turn(state, {})
+    assert trooper.tile == (7, 5)
 
 
 # -- combat ----------------------------------------------------------------
@@ -299,13 +305,32 @@ def test_a_node_changes_hands():
 
 def test_losing_your_base_eliminates_you():
     state = arena()
-    base = state.add_building(1, "base", 6, 5)
-    base.hp = 1
+    for building in list(state.buildings.values()):
+        if building.owner == 1:
+            building.hp = 0            # their only other post is already gone
+    doomed = state.add_building(1, "base", 6, 5)
+    doomed.hp = 1
     state.add_unit(0, "bruiser", 5, 5)
     result, _ = resolve_turn(state, {})
     assert 1 in result.eliminated
     assert not state.players[1].alive
-    assert state.living_teams() == set()
+    assert state.living_teams() == {0}
+
+
+def test_elimination_destroys_the_defeated_army():
+    """Leftover units would otherwise stand around forever, still shooting,
+    with nobody ever filing orders for them again."""
+    state = arena()
+    for building in list(state.buildings.values()):
+        if building.owner == 1:
+            building.hp = 0
+    doomed = state.add_building(1, "base", 6, 5)
+    doomed.hp = 1
+    stragglers = [state.add_unit(1, "trooper", 15, 2),
+                  state.add_unit(1, "scout", 16, 3)]
+    state.add_unit(0, "bruiser", 5, 5)
+    resolve_turn(state, {})
+    assert all(unit.uid not in state.units for unit in stragglers)
 
 
 def test_resolution_is_deterministic():
@@ -322,3 +347,73 @@ def test_resolution_is_deterministic():
         result, _ = resolve_turn(state, orders)
         return result.events
     assert once() == once()
+
+
+# -- standing orders -------------------------------------------------------
+
+def test_orders_stand_until_they_are_changed():
+    """A unit told to cross the map keeps walking, turn after turn.
+
+    Wiping paths every turn made "go there" mean "go one turn's worth in that
+    direction", which is not what anybody means by it.
+    """
+    state = arena(width=24)
+    scout = state.add_unit(0, "scout", 1, 5)
+    resolve_turn(state, {0: [{"o": "move", "uid": scout.uid, "to": [19, 5]}]})
+    for _ in range(8):
+        resolve_turn(state, {})
+    assert scout.tile == (19, 5)
+
+
+def test_a_new_order_replaces_the_standing_one():
+    state = arena(width=24)
+    scout = state.add_unit(0, "scout", 1, 5)
+    resolve_turn(state, {0: [{"o": "move", "uid": scout.uid, "to": [19, 5]}]})
+    for _ in range(2):
+        resolve_turn(state, {})
+    outbound = scout.x
+    assert outbound > 5, "should be well down the map by now"
+    resolve_turn(state, {0: [{"o": "move", "uid": scout.uid, "to": [1, 5]}]})
+    assert scout.x < outbound, "the new order should turn it around at once"
+
+
+def test_hold_cancels_a_standing_order():
+    state = arena(width=24)
+    scout = state.add_unit(0, "scout", 1, 5)
+    resolve_turn(state, {0: [{"o": "move", "uid": scout.uid, "to": [19, 5]}]})
+    parked = scout.tile
+    resolve_turn(state, {0: [{"o": "hold", "uid": scout.uid}]})
+    resolve_turn(state, {})
+    assert scout.tile == parked
+
+
+def test_orders_for_one_unit_do_not_cancel_another_unit():
+    state = arena(width=24)
+    walker = state.add_unit(0, "scout", 1, 4)
+    other = state.add_unit(0, "scout", 1, 6)
+    resolve_turn(state, {0: [{"o": "move", "uid": walker.uid, "to": [19, 4]},
+                             {"o": "move", "uid": other.uid, "to": [19, 6]}]})
+    resolve_turn(state, {0: [{"o": "hold", "uid": other.uid}]})
+    before = walker.x
+    resolve_turn(state, {})
+    assert walker.x > before, "the untouched unit should still be marching"
+
+
+def test_a_slow_unit_can_cross_a_forest():
+    """Movement progress carries between turns.
+
+    A Bruiser earns 12 movement points a turn and a forest tile costs 24, so
+    resetting progress each turn made forest permanently impassable to it.
+    """
+    rows = ["1###############",
+            "################",
+            "..%%%%%%%%%%%%.2",
+            "################"]
+    state = MatchState(TileMap.parse("!players 2\n" + "\n".join(rows)))
+    state.players[0] = Player(pid=0, name="P", team=0)
+    state.add_building(0, "base", 0, 0)
+    bruiser = state.add_unit(0, "bruiser", 1, 2)
+    resolve_turn(state, {0: [{"o": "move", "uid": bruiser.uid, "to": [6, 2]}]})
+    for _ in range(8):
+        resolve_turn(state, {})
+    assert bruiser.x > 1, "a speed-1 unit must be able to enter forest at all"
