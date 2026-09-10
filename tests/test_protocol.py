@@ -3,7 +3,7 @@ import struct
 
 import pytest
 
-from scorched.protocol import Framer, ProtocolError, encode
+from lanlib.protocol import Framer, ProtocolError, encode
 
 
 def test_roundtrip():

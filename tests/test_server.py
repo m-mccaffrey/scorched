@@ -10,7 +10,7 @@ import time
 import pytest
 
 from scorched.game import Settings
-from scorched.protocol import PROTOCOL_VERSION, connect
+from lanlib.protocol import PROTOCOL_VERSION, connect
 from scorched.server import Server
 from scorched.terrain import Terrain
 
@@ -96,7 +96,7 @@ def test_two_clients_join_and_the_first_is_host(server):
 
 
 def test_version_mismatch_is_rejected(server):
-    from scorched.protocol import connect as raw_connect
+    from lanlib.protocol import connect as raw_connect
     conn = raw_connect("127.0.0.1", server.bound_port, timeout=5)
     conn.send({"t": "hello", "name": "Old", "version": PROTOCOL_VERSION + 99})
     deadline = time.monotonic() + 2

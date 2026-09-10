@@ -259,7 +259,7 @@ PY
 fi
 
 # -- 5. what next -----------------------------------------------------------
-LAN_IP="$("$PYTHON" -c 'from scorched.discovery import local_addresses; print(local_addresses()[0])' 2>/dev/null || true)"
+LAN_IP="$("$PYTHON" -c 'from lanlib.discovery import local_addresses; print(local_addresses()[0])' 2>/dev/null || true)"
 
 cat <<EOF
 

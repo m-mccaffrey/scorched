@@ -15,15 +15,15 @@ import time
 
 import pygame
 
-from .. import discovery
+from lanlib import discovery
 from ..game import COLOR_NAMES, MAX_PLAYERS, Settings, TEAM_COLORS
-from ..protocol import DEFAULT_PORT, PROTOCOL_VERSION, Connection, connect
+from lanlib.protocol import DEFAULT_PORT, PROTOCOL_VERSION, Connection, connect
 from ..server import Server
 from ..terrain import PLAY_H, STYLES, WORLD_H, WORLD_W
 from ..weapons import WEAPON_BY_CODE
-from . import ui
+from lanlib import ui
 from .anim import ShotPlayer
-from .audio import Sfx
+from .audio import ScorchedSfx
 from .draw import Hud, Renderer, _team_color
 from .palette import (UI_ACCENT, UI_BG, UI_DIM, UI_GOOD, UI_PANEL,
                       UI_PANEL_HI, UI_TEXT, UI_WARN, shade)
@@ -90,7 +90,7 @@ class App:
             flags |= pygame.FULLSCREEN
         self.screen = self._open_display(flags)
         self.clock = pygame.time.Clock()
-        self.sfx = Sfx(enabled=sound)
+        self.sfx = ScorchedSfx(enabled=sound)
         self.renderer = Renderer()
         self.hud = Hud()
         self.state = ClientState()

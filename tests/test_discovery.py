@@ -1,6 +1,6 @@
 import time
 
-from scorched.discovery import Beacon, local_addresses, scan
+from lanlib.discovery import Beacon, local_addresses, scan
 
 
 def test_beacon_answers_a_scan():

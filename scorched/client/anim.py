@@ -15,9 +15,10 @@ import random
 import pygame
 
 from ..physics import explosion_frames
+from .audio import LOUDEST_BLAST
 from ..terrain import PLAY_H, WORLD_W
 from .palette import DIG_RAMP, FIRE_RAMP, SHIELD, UI_ACCENT, shade
-from . import ui
+from lanlib import ui
 
 TRAIL_LEN = 14
 
@@ -172,7 +173,7 @@ class ShotPlayer:
         self._explosions.append(Explosion(x, y, radius, event.get("k", "he")))
         self.shake = min(9.0, self.shake + radius * 0.14)
         if self.sfx:
-            self.sfx.play("boom", radius)
+            self.sfx.play("boom", radius / LOUDEST_BLAST)
         debris = min(46, 8 + radius)
         crust = self.renderer.ground[0]
         for _ in range(debris):

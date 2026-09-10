@@ -13,25 +13,15 @@ import time
 from dataclasses import dataclass, field
 
 from . import weapons as W
+from lanlib.theme import COLOR_NAMES, TEAM_COLORS
 from .physics import Simulation, DEFAULT_GRAVITY, WALL_MODES
 from .terrain import STYLES, Terrain, WORLD_W
 
 MAX_PLAYERS = 8
 START_HP = 100
 
-#: Eight readable, clearly distinct tank colours -- deliberately a limited
-#: palette so the whole thing keeps its lo-fi look.
-TEAM_COLORS = (
-    (232, 64, 48),    # red
-    (72, 148, 255),   # blue
-    (96, 208, 88),    # green
-    (248, 208, 64),   # yellow
-    (208, 96, 224),   # magenta
-    (96, 224, 216),   # cyan
-    (248, 152, 56),   # orange
-    (216, 216, 216),  # white
-)
-COLOR_NAMES = ("Red", "Blue", "Green", "Yellow", "Magenta", "Cyan", "Orange", "White")
+__all__ = ["COLOR_NAMES", "TEAM_COLORS", "Game", "Player", "Settings"]
+
 
 PHASE_LOBBY = "lobby"
 PHASE_BUY = "buy"

@@ -21,7 +21,7 @@ from ..terrain import HUD_H, PLAY_H, WORLD_W
 from .palette import (GROUNDS, SHIELD, SKIES, UI_ACCENT, UI_DIM, UI_PANEL,
                       UI_PANEL_LO, UI_TEXT, UI_WARN, health_color, pick_scheme,
                       shade)
-from . import ui
+from lanlib import ui
 
 UI_GOOD_CASH = (150, 220, 150)
 

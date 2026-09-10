@@ -120,7 +120,7 @@ if defined DO_FIREWALL call :firewall
 
 REM --- 6. what next ----------------------------------------------------------
 set "LANIP="
-for /f "delims=" %%i in ('%PY% -c "from scorched.discovery import local_addresses;print(local_addresses()[0])" 2^>nul') do set "LANIP=%%i"
+for /f "delims=" %%i in ('%PY% -c "from lanlib.discovery import local_addresses;print(local_addresses()[0])" 2^>nul') do set "LANIP=%%i"
 if not defined LANIP set "LANIP=<the LAN address of this machine>"
 
 echo.

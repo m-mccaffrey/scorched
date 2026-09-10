@@ -13,22 +13,21 @@ from __future__ import annotations
 
 import random
 
-# -- interface chrome --------------------------------------------------------
-UI_BG = (18, 18, 26)
-UI_PANEL = (32, 34, 48)
-UI_PANEL_HI = (56, 60, 82)
-UI_PANEL_LO = (12, 12, 20)
-UI_TEXT = (222, 226, 238)
-UI_DIM = (132, 138, 158)
-UI_ACCENT = (248, 208, 64)
-UI_WARN = (232, 84, 60)
-UI_GOOD = (120, 220, 120)
-UI_SHADOW = (8, 8, 12)
+# Interface chrome is shared across every game in the repo; re-exported here so
+# Scorched's own modules have a single place to import colour from.
+from lanlib.theme import (HP_FAIR, HP_GOOD, HP_POOR, UI_ACCENT, UI_BG, UI_DIM,
+                          UI_GOOD, UI_PANEL, UI_PANEL_HI, UI_PANEL_LO,
+                          UI_SHADOW, UI_TEXT, UI_WARN, health_color, shade)
 
-HP_GOOD = (96, 208, 88)
-HP_FAIR = (248, 208, 64)
-HP_POOR = (232, 84, 60)
 SHIELD = (110, 200, 255)
+
+#: Re-exported so the rest of the game imports every colour from one module.
+__all__ = [
+    "HP_FAIR", "HP_GOOD", "HP_POOR", "UI_ACCENT", "UI_BG", "UI_DIM", "UI_GOOD",
+    "UI_PANEL", "UI_PANEL_HI", "UI_PANEL_LO", "UI_SHADOW", "UI_TEXT", "UI_WARN",
+    "health_color", "shade", "SHIELD", "SKIES", "GROUNDS", "FIRE_RAMP",
+    "DIG_RAMP", "pick_scheme",
+]
 
 #: Sky schemes: (top, horizon, has_stars)
 SKIES = (
@@ -67,14 +66,3 @@ def pick_scheme(seed: int) -> tuple[tuple, tuple]:
     return rng.choice(SKIES), rng.choice(GROUNDS)
 
 
-def health_color(fraction: float) -> tuple[int, int, int]:
-    if fraction > 0.6:
-        return HP_GOOD
-    if fraction > 0.3:
-        return HP_FAIR
-    return HP_POOR
-
-
-def shade(color, factor: float) -> tuple[int, int, int]:
-    """Scale a colour's brightness, clamped. Used for bevels and shadows."""
-    return tuple(max(0, min(255, int(c * factor))) for c in color)

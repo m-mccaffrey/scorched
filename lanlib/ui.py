@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pygame
 
-from .palette import (UI_ACCENT, UI_DIM, UI_PANEL, UI_PANEL_HI, UI_PANEL_LO,
-                      UI_SHADOW, UI_TEXT, shade)
+from .theme import (UI_ACCENT, UI_DIM, UI_PANEL, UI_PANEL_HI, UI_PANEL_LO,
+                    UI_SHADOW, UI_TEXT, shade)
 
 _FONTS: dict[int, pygame.font.Font] = {}
 _TEXT_CACHE: dict[tuple, pygame.Surface] = {}

@@ -30,7 +30,7 @@ dev = ["pytest>=7", "pyflakes>=3"]
 scorched = "scorched.__main__:main"
 
 [tool.setuptools]
-packages = ["scorched", "scorched.client"]
+packages = ["lanlib", "scorched", "scorched.client"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

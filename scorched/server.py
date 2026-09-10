@@ -20,10 +20,10 @@ import time
 
 from . import weapons as W
 from .ai import SKILLS, BotBrain
-from .discovery import Beacon
+from lanlib.discovery import Beacon
 from .game import (COLOR_NAMES, MAX_PLAYERS, PHASE_AIM, PHASE_BUY,
                    PHASE_GAME_OVER, PHASE_LOBBY, PHASE_RESOLVE, Game, Settings)
-from .protocol import DEFAULT_PORT, PROTOCOL_VERSION, Connection
+from lanlib.protocol import DEFAULT_PORT, PROTOCOL_VERSION, Connection
 
 TICK_HZ = 30
 HEARTBEAT = 0.5          # state broadcast cadence while waiting on a player
