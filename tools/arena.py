@@ -12,6 +12,14 @@ so the winner is re-checked on seeds it has never played.
 **Side swapping.** Spawns are not identical, so every pairing is played from
 both sides an equal number of times. Without that the search would happily
 learn which corner of the map is better.
+
+**Every map, every evaluation.** Searching on one map produced a candidate that
+looked excellent -- Veteran over Moderate from 31% to 86% on held-out seeds --
+and was a regression on a map it had never seen, falling to 45% where the
+shipped numbers managed 55%. Held-out seeds catch a candidate that memorised
+its games; only held-out *maps* catch one that memorised its terrain, and the
+fix is to stop having any. Maps rotate by seed, so the match budget is
+unchanged and no map is special.
 """
 
 from __future__ import annotations
@@ -101,15 +109,22 @@ SEED_SHARE = {
 }
 
 
-def jobs(seeds) -> list[tuple[str, str, int, bool]]:
+#: Every shipped map. A tier ordering that only holds on one of them is not an
+#: ordering, it is a fact about that map.
+MAPS = ("duel", "crossroads", "basin")
+
+
+def jobs(seeds) -> list[tuple[str, str, int, bool, str]]:
     """Every match one evaluation consists of, in a fixed order."""
     seeds = list(seeds)
     out = []
     for pair in TARGETS:
         share = SEED_SHARE.get(pair, 1)
-        for seed in seeds[:max(1, len(seeds) * share // 3)]:
+        chosen = seeds[:max(len(MAPS), len(seeds) * share // 3)]
+        for index, seed in enumerate(chosen):
             for swap in (False, True):
-                out.append((pair[0], pair[1], seed, swap))
+                out.append((pair[0], pair[1], seed, swap,
+                            MAPS[index % len(MAPS)]))
     return out
 
 

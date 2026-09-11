@@ -149,6 +149,8 @@ def describe(values: dict, against: dict) -> list[str]:
     """Lines for every knob the candidate actually moved."""
     lines = []
     for key, _low, _high, whole in spec():
+        if key.endswith("+"):
+            continue            # steps are shown as the table they build
         was, now = against.get(key), values.get(key)
         if was == now:
             continue
