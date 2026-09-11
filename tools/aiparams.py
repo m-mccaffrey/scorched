@@ -48,24 +48,64 @@ PER_TIER = {
     "supports":     (0, 2, True),
 }
 
+#: Fields that may only ever go *up* the ladder, expressed as a rung plus
+#: non-negative steps rather than as four free numbers.
+#:
+#: Left unconstrained, the search produced a table that met every win-rate
+#: target and meant nothing: Novice running five Engineers to Cyborg's two,
+#: Novice counter-picking at 0.90 against Moderate's 0.24, and a supports
+#: column reading 1, 0, 1, 1. Win rates were all the objective ever asked
+#: about, so that is all it delivered. A difficulty tier has to *be* more than
+#: the one below it, not merely beat it.
+MONOTONE = ("counter_pick", "workers", "barracks", "supports")
+
+#: Fields left free per tier, because more is not obviously better and the
+#: whole question is open. The first search wanted Veteran at 3 rather than 6
+#: -- less cautious, not more -- and caution is not competence.
+FREE = ("mass_at",)
+
 TIERS = ai.SKILL_ORDER
+
+#: Novice is pinned to what it ships with. It is the reference for "gentle",
+#: and an objective that only scores the ordering will happily make the
+#: beginners' bot stronger so long as everyone else rises faster. The first
+#: search did exactly that, taking Novice from one Engineer to five.
+ANCHOR = TIERS[0]
 
 
 def spec() -> list[tuple[str, float, float, bool]]:
-    """Every searchable knob as (key, low, high, integral), in a fixed order."""
+    """Every searchable knob as (key, low, high, integral), in a fixed order.
+
+    The per-tier entries are *steps*, not values: what the search moves for a
+    monotone field is how much further up the ladder each rung sits, which can
+    never be negative. The tier table is then ordered by construction rather
+    than by hoping the objective notices.
+    """
     out = [(name, lo, hi, whole) for name, (lo, hi, whole) in SHARED.items()]
     for tier in TIERS:
-        for name, (lo, hi, whole) in PER_TIER.items():
-            out.append((f"{tier}.{name}", lo, hi, whole))
+        if tier == ANCHOR:
+            continue
+        for name in FREE:
+            low, high, whole = PER_TIER[name]
+            out.append((f"{tier}.{name}", low, high, whole))
+        for name in MONOTONE:
+            low, high, whole = PER_TIER[name]
+            out.append((f"{tier}.{name}+", 0.0, high - low, whole))
     return out
 
 
 def baseline() -> dict:
     """What the bot ships with today -- the point the search starts from."""
     values = {name: getattr(ai, name) for name in SHARED}
-    for tier in TIERS:
-        for name in PER_TIER:
+    for index, tier in enumerate(TIERS):
+        if tier == ANCHOR:
+            continue
+        for name in FREE:
             values[f"{tier}.{name}"] = getattr(ai.SKILLS[tier], name)
+        for name in MONOTONE:
+            below = getattr(ai.SKILLS[TIERS[index - 1]], name)
+            values[f"{tier}.{name}+"] = max(0, getattr(ai.SKILLS[tier], name)
+                                            - below)
     return values
 
 
@@ -78,16 +118,31 @@ def clamp(values: dict) -> dict:
     return out
 
 
+def profiles(values: dict) -> dict:
+    """Turn a candidate's steps into the four actual Skill records."""
+    values = clamp(values)
+    running = {name: getattr(ai.SKILLS[ANCHOR], name) for name in MONOTONE}
+    out = {}
+    for tier in TIERS:
+        if tier == ANCHOR:
+            out[tier] = ai.SKILLS[ANCHOR]
+            continue
+        changes = {name: values[f"{tier}.{name}"] for name in FREE}
+        for name in MONOTONE:
+            low, high, whole = PER_TIER[name]
+            running[name] = min(high, running[name]
+                                + values[f"{tier}.{name}+"])
+            changes[name] = (int(round(running[name])) if whole
+                             else float(running[name]))
+        out[tier] = dataclasses.replace(ai.SKILLS[tier], **changes)
+    return out
+
+
 def apply(values: dict) -> None:
     """Install a candidate into the live ``ai`` module. Process-local."""
-    values = clamp(values)
     for name in SHARED:
-        setattr(ai, name, values[name])
-    skills = {}
-    for tier in TIERS:
-        changes = {name: values[f"{tier}.{name}"] for name in PER_TIER}
-        skills[tier] = dataclasses.replace(ai.SKILLS[tier], **changes)
-    ai.SKILLS = skills
+        setattr(ai, name, clamp(values)[name])
+    ai.SKILLS = profiles(values)
 
 
 def describe(values: dict, against: dict) -> list[str]:

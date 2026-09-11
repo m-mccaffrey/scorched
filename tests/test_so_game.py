@@ -320,3 +320,31 @@ def test_a_bot_does_not_promise_the_same_supply_twice():
             elif order["o"] == "build":
                 spent += cost_of_building(order["code"], me.research)
         assert spent <= me.supply, f"{skill} overspent: {spent} of {me.supply}"
+
+
+def test_tuning_candidates_always_describe_a_real_ladder():
+    """The search may only propose difficulty tables that mean something.
+
+    Left free, an optimiser scored purely on win rates produced Novice running
+    five Engineers to Cyborg's two and a supports column reading 1, 0, 1, 1 --
+    every target met, and not a difficulty setting among them. The ladder is
+    now ordered by construction rather than by hoping the objective notices,
+    so this guards the constraint rather than the outcome.
+    """
+    import random as _random
+    from tools.aiparams import ANCHOR, MONOTONE, TIERS, baseline, profiles
+    import standing_orders.ai as ai
+    from tools.aiparams import spec
+
+    shipped = dict(ai.SKILLS)
+    rng = _random.Random(4)
+    for _ in range(50):
+        candidate = {key: rng.uniform(low, high)
+                     for key, low, high, _whole in spec()}
+        built = profiles(candidate)
+        for field in MONOTONE:
+            rungs = [getattr(built[tier], field) for tier in TIERS]
+            assert rungs == sorted(rungs), f"{field} is not a ladder: {rungs}"
+        assert built[ANCHOR] == shipped[ANCHOR], "the beginners' bot is pinned"
+
+    assert profiles(baseline()) == shipped, "baseline must round-trip exactly"
