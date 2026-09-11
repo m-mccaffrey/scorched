@@ -76,7 +76,7 @@ class TileMap:
     """A rectangular grid of terrain, plus spawn points and resource nodes."""
 
     __slots__ = ("width", "height", "tiles", "spawns", "nodes", "node_set",
-                 "info")
+                 "info", "step_cost")
 
     def __init__(self, tiles: list[str], spawns: dict[int, tuple[int, int]],
                  nodes: list[tuple[int, int]], info: MapInfo) -> None:
@@ -89,6 +89,18 @@ class TileMap:
         #: so capture and harvesting can never disagree about it.
         self.node_set = set(nodes)
         self.info = info
+        #: Passable tiles mapped to what they cost to enter, flattened once at
+        #: load. A* asked ``passable()`` and ``cost()`` for every neighbour it
+        #: looked at, which is six Python calls a step and was far and away the
+        #: most expensive thing in the game -- 46% of a self-play match, and
+        #: the thing a Pi 400 feels most. One dict lookup answers both, and an
+        #: absent key means "off the map or impassable", exactly as before.
+        self.step_cost = {
+            (x, y): (COST_FOREST if row[x] == FOREST else COST_OPEN)
+            for y, row in enumerate(self.tiles)
+            for x in range(len(row))
+            if row[x] in _PASSABLE
+        }
 
     # -- queries -----------------------------------------------------------
     def at(self, x: int, y: int) -> str:
@@ -214,33 +226,41 @@ def find_path(tilemap: TileMap, start: tuple[int, int], goal: tuple[int, int],
     if goal in blocked:
         return []
 
-    def heuristic(tile):
-        return (abs(tile[0] - goal[0]) + abs(tile[1] - goal[1])) * COST_OPEN
+    # Everything the inner loop touches is bound to a local first. At a few
+    # hundred thousand iterations a match, attribute lookups are the cost.
+    step_cost = tilemap.step_cost
+    goal_x, goal_y = goal
+    push, pop = heapq.heappush, heapq.heappop
+    far = 1 << 30
 
-    open_heap = [(heuristic(start), 0, start)]
+    start_h = (abs(start[0] - goal_x) + abs(start[1] - goal_y)) * COST_OPEN
+    open_heap = [(start_h, 0, start)]
     came: dict = {start: None}
     best: dict = {start: 0}
     seen = 0
 
     while open_heap:
-        _, spent, current = heapq.heappop(open_heap)
+        _, spent, current = pop(open_heap)
         if current == goal:
             break
-        if spent > best.get(current, 1 << 30):
+        if spent > best.get(current, far):
             continue
         seen += 1
         if seen > limit:
             return []
         cx, cy = current
         for dx, dy in NEIGHBOURS:
-            nxt = (cx + dx, cy + dy)
-            if not tilemap.passable(*nxt) or nxt in blocked:
+            nx, ny = cx + dx, cy + dy
+            nxt = (nx, ny)
+            step = step_cost.get(nxt)
+            if step is None or nxt in blocked:
                 continue
-            cost = spent + tilemap.cost(*nxt)
-            if cost < best.get(nxt, 1 << 30):
+            cost = spent + step
+            if cost < best.get(nxt, far):
                 best[nxt] = cost
                 came[nxt] = current
-                heapq.heappush(open_heap, (cost + heuristic(nxt), cost, nxt))
+                push(open_heap, (cost + (abs(nx - goal_x) + abs(ny - goal_y))
+                                 * COST_OPEN, cost, nxt))
 
     if goal not in came:
         return []

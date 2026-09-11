@@ -213,12 +213,28 @@ class Match:
             return True
         return all(p.ready or not p.connected for p in living)
 
-    def resolve(self) -> dict:
-        """Play the turn out and build each player's fogged timeline."""
+    def resolve(self, timelines: bool = True) -> dict:
+        """Play the turn out and build each player's fogged timeline.
+
+        ``timelines=False`` plays the same turn by the same rules but skips
+        the fog bookkeeping and the per-player event lists, which together are
+        most of the cost of a turn nobody is going to watch. Used by the
+        offline parameter search, which only ever reads the final state.
+        """
         orders = dict(self.pending)
         self.pending = {}
-        result, rejected = resolve_turn(self.state, orders)
+        result, rejected = resolve_turn(self.state, orders, vision=timelines)
         self.turn_seq += 1
+        if not timelines:
+            self.last_timelines = {}
+            for pid in result.eliminated:
+                player = self.state.players.get(pid)
+                if player is not None:
+                    self.note(f"{player.name} has been knocked out")
+            self.state.turn += 1
+            self.phase = PHASE_RESOLVE
+            self.deadline = 0.0
+            return self.last_timelines
 
         owner_lookup = {}
         for unit in self.state.units.values():

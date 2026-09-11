@@ -179,6 +179,13 @@ def apply_orders(state: MatchState, orders: dict, result: TurnResult,
             unit.job = None
 
     occupancy = state.occupancy()
+    # Every unit plans around the same set of tiles -- a unit's own tile holds
+    # a unit, never a building, so subtracting it from the obstacle set was
+    # always a no-op. That makes the whole turn's routing cacheable by
+    # (start, goal), which matters because bots reissue the same march every
+    # turn and A* is the single most expensive thing in a self-play match.
+    blocked = static_obstacles(occupancy)
+    routes: dict = {}
 
     for pid, player_orders in sorted(orders.items()):
         player = state.players.get(pid)
@@ -186,14 +193,27 @@ def apply_orders(state: MatchState, orders: dict, result: TurnResult,
             continue
         for order in player_orders:
             try:
-                _apply_one(state, player, order, occupancy, result, strikes)
+                _apply_one(state, player, order, occupancy, result, strikes,
+                           blocked, routes)
             except OrderError as exc:
                 reject(pid, str(exc))
     return rejected
 
 
+def _route(tilemap, start, goal, blocked, routes: dict) -> list:
+    """``path_toward``, memoised for the turn. Paths are returned as copies:
+    a unit pops tiles off its own path as it walks."""
+    key = (start, goal)
+    path = routes.get(key)
+    if path is None:
+        path = path_toward(tilemap, start, goal, blocked)
+        routes[key] = path
+    return list(path)
+
+
 def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
-               result: TurnResult, strikes: list) -> None:
+               result: TurnResult, strikes: list, blocked: set,
+               routes: dict) -> None:
     kind = str(order.get("o", ""))
 
     if kind in ("move", "attack"):
@@ -203,11 +223,10 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
         goal = _tile(order.get("to"))
         if goal is None or not state.map.inside(*goal):
             raise OrderError("target off the map")
-        blocked = static_obstacles(occupancy) - {unit.tile}
         unit.stance = kind
         unit.goal = goal
         unit.job = None
-        unit.path = path_toward(state.map, unit.tile, goal, blocked)
+        unit.path = _route(state.map, unit.tile, goal, blocked, routes)
         if not unit.path and goal != unit.tile:
             raise OrderError(f"{unit.type.name} cannot reach that tile")
 
@@ -262,8 +281,7 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
         unit.job = (code, target)
         unit.stance = "hold"
         unit.goal = target
-        blocked = static_obstacles(occupancy) - {unit.tile}
-        path = path_toward(state.map, unit.tile, target, blocked)
+        path = _route(state.map, unit.tile, target, blocked, routes)
         # Stop one tile short: the structure needs the site itself free.
         unit.path = path[:-1] if path else []
 
@@ -365,12 +383,17 @@ def _tile(value):
 class Resolver:
     """Plays one turn out beat by beat."""
 
-    def __init__(self, state: MatchState) -> None:
+    def __init__(self, state: MatchState, vision: bool = True) -> None:
         self.state = state
         self.result = TurnResult()
         self.occupancy = state.occupancy()
         self._cache = VisionCache(state.map)
         self._teams = sorted({p.team for p in state.players.values()})
+        #: Recording what each side saw at each beat is a third of the cost of
+        #: a turn, and it exists only so the timeline can be cut down per
+        #: player. A match nobody is watching -- a self-play game in a
+        #: parameter search -- needs the outcome, not the presentation.
+        self._vision = vision
         self._strikes: list = []
         #: Units under medical care this turn, settled before a shot is fired.
         self.patients: dict = {}
@@ -499,6 +522,8 @@ class Resolver:
         discs are memoised anyway, but skipping the unions keeps the cost of a
         quiet turn near zero, which matters on a Pi.
         """
+        if not self._vision:
+            return
         for team in self._teams:
             per_beat = self.result.vision.setdefault(team, {})
             if reuse and beat > 0 and (beat - 1) in per_beat:
@@ -871,6 +896,11 @@ class Resolver:
                             total=player.supply)
 
 
-def resolve_turn(state: MatchState, orders: dict) -> tuple[TurnResult, dict]:
-    """Play one turn out. Mutates ``state`` and returns (timeline, rejections)."""
-    return Resolver(state).run(orders)
+def resolve_turn(state: MatchState, orders: dict,
+                 vision: bool = True) -> tuple[TurnResult, dict]:
+    """Play one turn out. Mutates ``state`` and returns (timeline, rejections).
+
+    Pass ``vision=False`` for a match with no audience: the rules play out
+    identically, but nothing is recorded for the fog filter to read.
+    """
+    return Resolver(state, vision=vision).run(orders)

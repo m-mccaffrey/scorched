@@ -25,6 +25,10 @@ dependencies = ["pygame-ce>=2.1.2"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pyflakes>=3"]
+# Offline tooling only -- the parameter search under tools/. The game itself
+# still needs exactly one third-party package, and nothing here ever reaches
+# a Pi 400 or a player's machine.
+tune = ["cma>=3.3", "numpy>=1.24"]
 
 [project.scripts]
 scorched = "scorched.__main__:main"
