@@ -1383,10 +1383,12 @@ class App:
                          x, y + 14, 12, UI_DIM)
             y += 30
         y = max(y, panel.y + 120)
-        ui.draw_text(self.screen, "right-click: move", x, y, 13, UI_DIM)
-        ui.draw_text(self.screen, "shift+right-click: attack-move", x, y + 14, 13,
-                     UI_DIM)
-        ui.draw_text(self.screen, "tab: select whole army", x, y + 28, 13, UI_DIM)
+        ui.draw_text(self.screen, "right-click: march there", x, y, 13, UI_DIM)
+        ui.draw_text(self.screen, "shift+right: advance, ready to fight",
+                     x, y + 13, 13, UI_DIM)
+        ui.draw_text(self.screen, "  -- but a quarter slower", x, y + 26, 12,
+                     UI_WARN)
+        ui.draw_text(self.screen, "tab: select whole army", x, y + 40, 13, UI_DIM)
 
     def _draw_overview(self, panel, x, y) -> None:
         ui.draw_text(self.screen, "COMMANDERS", x, y, 15, UI_DIM)

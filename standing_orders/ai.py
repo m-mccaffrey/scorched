@@ -74,6 +74,15 @@ PRESS_ADVANTAGE = 1.35
 #: keeping everyone bunched together.
 RALLY_RADIUS = 5
 
+#: How close to the objective, or to a visible enemy, before a bot stops
+#: marching and starts advancing ready to fight.
+#:
+#: Advancing the whole way is a serious mistake in this game: reinforcements
+#: appear at home, so anything that slows an attacker across the map hands the
+#: advantage to the defender. Bots that advanced from their own doorstep
+#: stopped resolving matches at all.
+CONTACT_DISTANCE = 5
+
 #: A threat must be at least this costly, and this large a share of our own
 #: army, before it is worth pulling troops off an attack.
 MIN_THREAT = 8
@@ -393,11 +402,14 @@ class BotBrain:
                        if manhattan(u.tile, anchor.tile) <= RALLY_RADIUS]
             if len(grouped) >= mass_at or at_cap:
                 for unit in attackers:
-                    orders.append({"o": "attack", "uid": unit.uid,
-                                   "to": list(target)})
+                    orders.append({"o": self._pace(unit, target, enemies),
+                                   "uid": unit.uid, "to": list(target)})
             else:
+                # Gathering happens behind your own lines: march, do not
+                # advance. Rallying at cautious pace is pure lost time.
                 for unit in attackers:
-                    orders.append({"o": "attack", "uid": unit.uid,
+                    stance = "attack" if enemies else "move"
+                    orders.append({"o": stance, "uid": unit.uid,
                                    "to": list(anchor.tile)})
         else:
             # Not ready to commit: spread out and take the map instead, which
@@ -414,6 +426,20 @@ class BotBrain:
             if spot is not None:
                 orders.append({"o": "move", "uid": scout.uid, "to": list(spot)})
         return orders
+
+    def _pace(self, unit, target, enemies) -> str:
+        """March or advance?
+
+        Attack orders trade pace for stopping to fight whatever you meet.
+        Worth paying at the point of contact; a waste while crossing empty
+        ground, where arriving late is the only real danger. Units keep
+        shooting either way -- the stance only decides whether they halt.
+        """
+        if manhattan(unit.tile, target) <= CONTACT_DISTANCE:
+            return "attack"
+        if any(manhattan(unit.tile, e.tile) <= CONTACT_DISTANCE for e in enemies):
+            return "attack"
+        return "move"
 
     def _claim_node(self, state, me, unit, taken=()):
         """Nearest node we do not already own. Capture is a trip, not a post."""

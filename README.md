@@ -187,13 +187,19 @@ work across a wide range of ages at one table.
 | --- | --- |
 | Left-click | Select a unit or building |
 | Drag | Box-select an army |
-| Right-click | Move there |
-| Shift + right-click | Attack-move there — engage anything met on the way |
+| Right-click | **March** there, as fast as the unit goes |
+| Shift + right-click | **Advance** there — stops to engage anything it meets, but travels at three-quarter pace |
 | `Tab` | Select your whole army |
 | `Enter` | Commit your orders |
 | `Space` | Skip a replay |
 | Hover anything | A tooltip explaining it — terrain, units, buildings, nodes |
 | `T` | Chat · `Esc` Pause · `F11` Fullscreen |
+
+Marching and advancing is a real trade-off rather than a strict upgrade:
+picking your way forward ready to fight costs you a quarter of your speed, so
+crossing your own half of the map is worth doing at a march. Units keep
+shooting whatever comes into range either way — the difference is whether they
+*stop* for it.
 
 **Orders stand until you change them.** Send a Scout across the map and it keeps
 walking, turn after turn; its remaining route is drawn dimmed so you can tell
@@ -320,13 +326,17 @@ threatened, and builds forward depots to grow its cap. When difficulty varied
 only in how a bot *fought*, the economy decided matches instead and every level
 converged on a coin flip.
 
-Veteran beats Novice 8 games in 8, in a median of 46 turns.
+Veteran beats Novice 8 games in 8, in a median of 53 turns.
+
+Bots march while crossing open ground and only advance once contact is near,
+which matters more than it sounds: reinforcements appear at home, so anything
+that slows an attacker across the map quietly hands the game to the defender.
 
 **Known limitation:** two bots of the *same* skill run identical economies and
-grind for a long time — a median of 135 turns, and occasionally longer. That is
-symmetric AI doing what symmetric AI does in any RTS; a human on either side
+grind for a long time — a median of 120–160 turns, and sometimes past 200. That
+is symmetric AI doing what symmetric AI does in any RTS; a human on either side
 breaks it immediately. Mismatched bots, which is what a real game is, settle in
-40–90 turns.
+45–65 turns.
 
 ---
 
@@ -408,7 +418,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 234 tests
+python3 -m pytest          # 244 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

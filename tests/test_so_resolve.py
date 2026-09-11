@@ -7,8 +7,8 @@ game that decides anything, and every client trusts its output blindly.
 import pytest
 
 from standing_orders.grid import TileMap
-from standing_orders.resolve import (ATTACK_EVERY, SUBTICKS,
-                                     resolve_turn)
+from standing_orders.resolve import (ADVANCE_PACE, ATTACK_EVERY, MOVE_PACE,
+                                     SUBTICKS, resolve_turn)
 from standing_orders.state import MatchState, Player
 from standing_orders.units import ARMY_CAP_BASE, UNIT
 
@@ -692,3 +692,44 @@ def test_an_enemy_engineer_cannot_finish_your_building():
     stuck = site.building_turns
     resolve_turn(state, {})
     assert site.building_turns == stuck
+
+
+# -- march versus advance --------------------------------------------------
+
+@pytest.mark.parametrize("code", ["worker", "scout", "trooper", "ranged",
+                                  "bruiser"])
+def test_advancing_is_slower_than_marching(code):
+    """Attack-move trades pace for readiness, so it is not a strict upgrade."""
+    def distance(stance, turns=8):
+        state = arena(width=30, height=8)
+        unit = state.add_unit(0, code, 1, 4)
+        resolve_turn(state, {0: [{"o": stance, "uid": unit.uid, "to": [28, 4]}]})
+        for _ in range(turns - 1):
+            resolve_turn(state, {})
+        return unit.x - 1
+
+    marched = distance("move")
+    advanced = distance("attack")
+    assert advanced < marched
+    assert advanced == marched * ADVANCE_PACE // MOVE_PACE
+
+
+def test_a_speed_one_unit_still_advances_steadily():
+    """Movement progress carries between turns, so three-quarter pace is a
+    pause every fourth turn rather than never moving at all."""
+    state = arena(width=30, height=8)
+    bruiser = state.add_unit(0, "bruiser", 1, 4)
+    resolve_turn(state, {0: [{"o": "attack", "uid": bruiser.uid, "to": [28, 4]}]})
+    for _ in range(7):
+        resolve_turn(state, {})
+    assert bruiser.x > 1
+
+
+def test_marching_units_still_shoot_what_they_pass():
+    """The stance decides whether you stop, not whether you fire."""
+    state = arena(width=24)
+    runner = state.add_unit(0, "trooper", 3, 5)
+    bystander = state.add_unit(1, "trooper", 6, 5)
+    resolve_turn(state, {0: [{"o": "move", "uid": runner.uid, "to": [20, 5]}]})
+    assert bystander.hp < UNIT["trooper"].hp
+    assert runner.x > 3, "a marching unit should not have stopped to fight"

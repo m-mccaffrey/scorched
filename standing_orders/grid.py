@@ -24,10 +24,13 @@ FOREST = "%"
 NODE = "$"
 SPAWNS = "12345678"
 
-#: Movement points charged for entering a tile. A turn grants a unit
-#: ``speed * SUBTICKS`` points, so forest costs a unit half its turn.
-COST_OPEN = 12
-COST_FOREST = 24
+#: Movement points charged for entering a tile.
+#:
+#: The scale is deliberately coarse -- eight points per beat at full pace --
+#: so that a cautious advance at seven-eighths pace is still whole numbers.
+#: See resolve.MOVE_PACE, which must satisfy MOVE_PACE * SUBTICKS == COST_OPEN.
+COST_OPEN = 96
+COST_FOREST = 192
 
 MAX_W = 32
 MAX_H = 24

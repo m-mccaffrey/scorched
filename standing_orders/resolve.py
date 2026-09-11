@@ -20,7 +20,7 @@ explicit tie-breaks, so a turn is a pure function of the state and the orders.
 from __future__ import annotations
 
 from .fog import VisionCache, team_vision
-from .grid import NEIGHBOURS, chebyshev, find_path
+from .grid import COST_OPEN, NEIGHBOURS, chebyshev, find_path
 from .state import Building, MatchState, Unit
 from .units import (BUILDING, RESEARCH_BY_CODE, UNIT, attack_bonus,
                     available_research, build_turns_for, cost_of_building,
@@ -33,8 +33,24 @@ SUBTICKS = 12
 #: Units fire on beats divisible by this: three volleys per fully engaged turn.
 ATTACK_EVERY = 4
 
+#: Movement points a unit earns per beat, per point of speed.
+#:
+#: Marching earns full pace; advancing under attack orders earns seven
+#: eighths of it. Picking your way forward ready to fight is slower than
+#: simply going somewhere, which gives the two orders a real trade-off
+#: instead of making attack-move a strict improvement on move.
+#:
+#: Deliberately a small edge. At three quarters the handicap dominated: armies
+#: took so much longer to cross that evenly matched bots stopped resolving
+#: at all.
+MOVE_PACE = 8
+ADVANCE_PACE = 7
+
 #: Movement points charged for one tile of open ground (mirrors grid.COST_OPEN).
-POINTS_PER_TILE = 12
+POINTS_PER_TILE = COST_OPEN
+
+assert MOVE_PACE * SUBTICKS == POINTS_PER_TILE, \
+    "a unit at speed 1 must cover exactly one open tile a turn when marching"
 
 
 class TurnResult:
@@ -331,7 +347,8 @@ class Resolver:
                 continue
             if unit.stance == "attack" and self._find_target(unit) is not None:
                 continue                     # engaged: stop and fight
-            unit.move_points += unit.type.speed
+            pace = ADVANCE_PACE if unit.stance == "attack" else MOVE_PACE
+            unit.move_points += unit.type.speed * pace
             nxt = unit.path[0]
             cost = self.state.map.cost(*nxt)
             if unit.move_points < cost:
