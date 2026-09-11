@@ -3,7 +3,7 @@ import random
 from standing_orders.ai import SKILLS, BotBrain
 from standing_orders.game import (PHASE_ORDERS, PHASE_OVER, PHASE_RESOLVE,
                                   Match, Settings, available_maps, load_map)
-from standing_orders.units import UNIT
+from standing_orders.units import UNIT, promotion_cost
 
 
 def started(players=2, **kwargs):
@@ -245,3 +245,78 @@ def test_a_bot_match_reaches_a_winner():
     assert match.phase == PHASE_OVER
     assert match.winner_team == match.state.players[0].team, \
         "the better bot should win"
+
+
+def test_skill_tiers_are_ordered_on_the_support_game():
+    """Novice plays none of it, Moderate the cheap half, the top two all of
+    it. The tiers are a ladder, not a set of flags."""
+    from standing_orders.ai import SKILLS, SKILL_ORDER
+    tiers = [SKILLS[name].supports for name in SKILL_ORDER]
+    assert tiers == sorted(tiers)
+    assert SKILLS["novice"].supports == 0
+    assert SKILLS["cyborg"].supports == max(tiers)
+
+
+def test_a_bot_never_bombs_more_of_its_own_troops_than_the_enemys():
+    """The blast plays no favourites, so the scoring has to."""
+    import random as _random
+    from standing_orders.ai import BotBrain
+    from standing_orders.grid import chebyshev
+    from standing_orders.units import AIRSTRIKE_RADIUS
+
+    match = started(2)
+    state = match.state
+    me = state.players[0]
+    me.supply = 500
+    state.add_building(0, "airfield", 6, 6, under=0)
+    # One enemy in a crowd of our own: bombing it would be a net loss.
+    state.add_unit(1, "trooper", 12, 6)
+    for offset in (-1, 0, 1):
+        state.add_unit(0, "trooper", 11, 6 + offset)
+
+    orders = BotBrain("cyborg", _random.Random(1)).plan(match, me)
+    for order in orders:
+        if order["o"] != "airstrike":
+            continue
+        target = tuple(order["to"])
+        mine = sum(1 for u in state.units.values()
+                   if u.alive and u.owner == 0
+                   and chebyshev(u.tile, target) <= AIRSTRIKE_RADIUS)
+        theirs = sum(1 for u in state.units.values()
+                     if u.alive and u.owner == 1
+                     and chebyshev(u.tile, target) <= AIRSTRIKE_RADIUS)
+        assert theirs > mine, f"bot bombed {mine} of its own to kill {theirs}"
+
+
+def test_a_bot_does_not_promise_the_same_supply_twice():
+    """Strikes and promotions used to be planned against separate copies of
+    the budget, so the server threw one of them out."""
+    import random as _random
+    from standing_orders.ai import BotBrain
+    from standing_orders.units import AIRSTRIKE_COST, UNIT, cost_of_building
+
+    for skill in SKILLS:
+        match = started(2)
+        state = match.state
+        me = state.players[0]
+        me.supply = 60
+        state.add_building(0, "airfield", 6, 6, under=0)
+        state.add_building(0, "medic", 7, 6, under=0)
+        for index in range(6):
+            unit = state.add_unit(0, "trooper", 9 + index, 8)
+            unit.blooded = True
+            unit.hp = 6
+        for index in range(3):
+            state.add_unit(1, "trooper", 12 + index, 9)
+
+        spent = 0
+        for order in BotBrain(skill, _random.Random(2)).plan(match, me):
+            if order["o"] == "airstrike":
+                spent += AIRSTRIKE_COST
+            elif order["o"] == "promote":
+                spent += promotion_cost(state.units[order["uid"]].rank)
+            elif order["o"] == "train":
+                spent += UNIT[order["code"]].cost
+            elif order["o"] == "build":
+                spent += cost_of_building(order["code"], me.research)
+        assert spent <= me.supply, f"{skill} overspent: {spent} of {me.supply}"

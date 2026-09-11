@@ -56,6 +56,43 @@ WALL_CHIP_DIVISOR = 4
 #: (pitiful) ability to shoot people.
 WORKER_DEMOLISH = 4
 
+#: Ranks a unit can be promoted through, and what each one costs. Promotion is
+#: the sink that makes an army worth keeping alive: quantity is capped, so a
+#: healthy economy has to buy quality. Costs escalate steeply on purpose --
+#: a flat price would be a checklist, an escalating one is a bottomless sink
+#: that always has something left to want.
+#:
+#: Money alone is never enough. A unit must have been in a fight since its
+#: last promotion, so a veteran is something you kept alive rather than
+#: something you bought.
+RANKS = ("", "Corporal", "Sergeant", "Lieutenant")
+PROMOTION_COST = (12, 30, 60)
+RANK_ATTACK = 1
+RANK_HP = 4
+
+#: The top rank leads as well as fights: every allied unit this close gets the
+#: bonus too. That turns an officer from a stat line into a position on the
+#: board, and gives the other side something worth shooting first.
+OFFICER_RANK = 3
+OFFICER_AURA = 1
+OFFICER_AURA_RADIUS = 2
+
+#: Supply charged per point of health a Field Hospital restores. Healing being
+#: metered rather than free is what makes the building a sink rather than a
+#: one-off purchase: it costs in proportion to how much fighting you are
+#: actually doing.
+MEDIC_HEAL_COST = 1
+
+#: An airstrike: bought at an Airfield, aimed at a tile, and landed halfway
+#: through the turn -- so you are aiming at where you think the enemy will be,
+#: not where they are. One per Airfield per turn.
+#:
+#: It hits everything in the blast, your own troops included. Without that it
+#: would be a free button to press during any melee; with it, it is a decision.
+AIRSTRIKE_COST = 30
+AIRSTRIKE_RADIUS = 1
+AIRSTRIKE_DAMAGE = 20
+
 #: Damage multipliers applied when the counter triangle is in play. Integer
 #: arithmetic throughout -- halves and three-halves, never floats.
 COUNTER_BONUS_NUM, COUNTER_BONUS_DEN = 3, 2
@@ -94,6 +131,9 @@ class BuildingType:
     harvests: bool = False  # can receive a worker's transmissions
     attack: int = 0         # sentry towers shoot; nothing else does
     reach: int = 0
+    heal: int = 0           # health restored per turn to each patient
+    heal_radius: int = 0
+    airstrikes: bool = False
     wall: bool = False
     buildable: bool = True  # false for the Command Post, which you start with
     blurb: str = ""
@@ -135,6 +175,13 @@ BUILDINGS: tuple[BuildingType, ...] = (
     BuildingType("tower", "Sentry Tower", cost=8, build_turns=2, hp=40,
                  vision=5, attack=4, reach=3,
                  blurb="Shoots three tiles. Never moves."),
+    BuildingType("medic", "Field Hospital", cost=10, build_turns=2, hp=35,
+                 vision=3, heal=4, heal_radius=1,
+                 blurb="Heals units holding beside it. They cannot shoot "
+                       "while under care."),
+    BuildingType("airfield", "Airfield", cost=14, build_turns=3, hp=45,
+                 vision=4, airstrikes=True,
+                 blurb="Calls one airstrike a turn, anywhere on the map."),
     BuildingType("wall", "Barricade", cost=2, build_turns=1, hp=30,
                  vision=0, wall=True,
                  blurb="Blocks the way. Bruisers and Engineers break it fast."),
@@ -179,6 +226,33 @@ def damage_to_building(attacker: str, building_code: str = "",
         if attacker not in BREACHERS:
             return max(1, damage // WALL_CHIP_DIVISOR)
     return max(1, damage)
+
+
+def rank_name(rank: int) -> str:
+    """Display name for a rank, or "" for a private."""
+    return RANKS[rank] if 0 <= rank < len(RANKS) else ""
+
+
+def promotion_cost(rank: int) -> int:
+    """Supply to go from ``rank`` to the next one, or 0 at the top."""
+    return PROMOTION_COST[rank] if 0 <= rank < len(PROMOTION_COST) else 0
+
+
+def max_rank() -> int:
+    return len(PROMOTION_COST)
+
+
+def airstrike_damage(distance: int) -> int:
+    """Blast damage at a given distance from the aim point.
+
+    Full force on the tile itself and half of it on the ring around, so that
+    hitting what you aimed at is worth twice guessing nearly right.
+    """
+    if distance <= 0:
+        return AIRSTRIKE_DAMAGE
+    if distance <= AIRSTRIKE_RADIUS:
+        return max(1, AIRSTRIKE_DAMAGE // 2)
+    return 0
 
 
 def buildable_units(building_codes) -> list[str]:
@@ -273,6 +347,9 @@ def catalogue() -> list[dict]:
         rows.append({"code": building.code, "name": building.name,
                      "kind": "building", "cost": building.cost,
                      "turns": building.build_turns, "hp": building.hp,
+                     "heal": building.heal,
+                     "heal_radius": building.heal_radius,
+                     "airstrikes": building.airstrikes,
                      "blurb": building.blurb})
     for project in RESEARCH:
         rows.append({"code": project.code, "name": project.name,

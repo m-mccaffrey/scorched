@@ -14,7 +14,8 @@ import random
 import pygame
 
 from lanlib import ui
-from lanlib.theme import UI_ACCENT, UI_TEXT, UI_WARN, shade, team_color
+from lanlib.theme import (UI_ACCENT, UI_GOOD, UI_TEXT, UI_WARN, shade,
+                          team_color)
 
 from ..resolve import SUBTICKS
 from .render import TILE
@@ -209,6 +210,38 @@ class ReplayPlayer:
             tile = tuple(event["at"])
             self._floaters.append(Floater(*self._pos(tile), "blocked", UI_TEXT,
                                           life=0.8))
+
+        elif kind == "strike":
+            tile = tuple(event["at"])
+            self._revealed.add(tile)
+            # A big ring of smoke rather than a tracer: the shot came from off
+            # the board, so there is nothing to draw a line from.
+            self._burst(tile, 40, (240, 190, 90), spread=90)
+            self._floaters.append(Floater(*self._pos(tile), "AIRSTRIKE",
+                                          UI_WARN, life=1.6))
+            if self.sfx:
+                self.sfx.play("boom")
+
+        elif kind == "heal":
+            tile = tuple(event["at"])
+            unit = self.view.units.get(event["uid"])
+            if unit is not None:
+                unit["hp"] = event.get("hp", unit.get("hp", 1))
+            self._floaters.append(Floater(*self._pos(tile),
+                                          f"+{event.get('amount', 0)}",
+                                          UI_GOOD, life=1.0))
+
+        elif kind == "promote":
+            tile = tuple(event["at"])
+            unit = self.view.units.get(event["uid"])
+            if unit is not None:
+                unit["rank"] = event.get("rank", unit.get("rank", 0))
+            self._burst(tile, 8, (255, 226, 130), spread=24)
+            self._floaters.append(Floater(*self._pos(tile),
+                                          event.get("name", "PROMOTED"),
+                                          UI_ACCENT, life=1.4))
+            if self.sfx:
+                self.sfx.play("ready")
 
         elif kind == "income":
             self.view.supply = event.get("total", self.view.supply)

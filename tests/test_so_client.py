@@ -11,7 +11,7 @@ import pygame
 import pytest
 
 from standing_orders.game import Settings
-from standing_orders.units import UNIT
+from standing_orders.units import AIRSTRIKE_COST, UNIT, promotion_cost
 
 
 @pytest.fixture(scope="module")
@@ -151,3 +151,62 @@ def test_orders_sent_to_the_server_carry_no_client_only_fields(app):
             for o in app.unit_orders.values()]
     assert all("path" not in o for o in sent)
     assert all(set(o) <= {"o", "uid", "to"} for o in sent)
+
+
+def test_promotion_is_offered_only_to_units_that_have_earned_it(app):
+    if not app.view.mine(app.my_pid):
+        pytest.skip("no units")
+    app.queued.clear()
+    app.view.supply = 500
+    unit = app.view.mine(app.my_pid)[0]
+    app.selected = {unit["uid"]}
+
+    unit["blooded"] = False
+    unit["rank"] = 0
+    app._queue_promotions()
+    assert not app.queued, "a fresh recruit is not up for promotion"
+
+    unit["blooded"] = True
+    app._queue_promotions()
+    assert [o["o"] for o in app.queued] == ["promote"]
+    assert app._spent() == promotion_cost(0)
+
+    # Asking twice must not buy the same promotion twice.
+    app._queue_promotions()
+    assert len(app.queued) == 1
+    app.queued.clear()
+    app.selected.clear()
+
+
+def test_an_airstrike_needs_an_airfield_and_is_costed(app):
+    if not app.view.buildings:
+        pytest.skip("no live match")
+    app.queued.clear()
+    app.view.supply = 500
+    base = next((b for b in app.view.buildings.values()
+                 if b["owner"] == app.my_pid and b["code"] == "base"), None)
+    if base is None:
+        pytest.skip("no base")
+
+    app.selected_building = base["bid"]
+    app._begin_airstrike()
+    assert app.aiming is None, "a Command Post is not an Airfield"
+
+    # Stand one up in the client's view and aim it.
+    app.view.buildings[9901] = {"bid": 9901, "owner": app.my_pid,
+                                "code": "airfield", "x": base["x"],
+                                "y": base["y"], "hp": 45, "under": 0}
+    app.selected_building = 9901
+    app._begin_airstrike()
+    assert app.aiming == 9901
+    app._call_airstrike((4, 4))
+    assert app.queued == [{"o": "airstrike", "bid": 9901, "to": [4, 4]}]
+    assert app._spent() == AIRSTRIKE_COST
+    assert app.aiming is None
+
+    # One sortie a turn.
+    app._begin_airstrike()
+    assert app.aiming is None
+    app.queued.clear()
+    app.view.buildings.pop(9901, None)
+    app.selected_building = None

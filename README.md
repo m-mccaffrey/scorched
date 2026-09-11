@@ -240,6 +240,8 @@ nobody working it is outlined in red and marked with a `!`:
 | Supply Depot | 8 | 2 turns | 50 | **+4 army cap**, and receives supply from five tiles away |
 | Barracks | 10 | 3 turns | 60 | Unlocks Gunners and Bruisers |
 | Sentry Tower | 8 | 2 turns | 40 | Shoots three tiles. Never moves |
+| Field Hospital | 10 | 2 turns | 35 | Heals units holding beside it |
+| Airfield | 14 | 3 turns | 45 | Calls one airstrike a turn |
 | Barricade | 2 | 1 turn | 30 | Blocks the way |
 
 **The army cap starts at 12 and grows by 4 per Supply Depot, to 40.** Engineers
@@ -270,6 +272,34 @@ to reach a tile two steps away, because the crowd he was routing around had
 walked off by the time he got there. Bodies in the way are handled where they
 actually are a problem, mid-turn: a unit that finds a tile occupied at the
 moment it steps reroutes then, with the board as it really is.
+
+**Promotion.** Any unit that has been in a fight can be promoted — Corporal,
+Sergeant, Lieutenant — for 12, then 30, then 60 supply. Each rank is +1 attack,
++4 health and a full heal, and a Lieutenant lends +1 attack to every friendly
+unit within two tiles, so an officer is a position on the board rather than a
+stat line. Each rank has to be earned again: money alone never makes a veteran.
+
+Promotion is what an economy buys once quantity is capped, and it changes what
+combat is *for*. A unit you keep alive compounds; one you throw away does not.
+
+**Field Hospitals** heal 4 health a turn to friendly units holding station
+within one tile, at 1 supply a point. Care is opt-in and it costs you the
+unit's rifle: a patient does not shoot for the turn, and enemies are under no
+such restraint. So a hospital at the front is a liability and one at the rear
+costs you the march — which is the decision, and it is why the building needs
+no other rule to keep it honest. Marching past your own hospital never disarms
+anyone, and a unit healed to full stops being a patient by itself.
+
+**Airstrikes** are called from an Airfield for 30 supply, one per Airfield per
+turn, anywhere on the map. The strike lands *halfway through the turn*, so you
+are aiming at where you think the enemy will be, not where they are now — the
+same guess the rest of the game asks you to make. Full damage on the tile, half
+on the ring around it, and it hits everything underneath including your own
+troops. It is the answer to a turtle, and to a rear-area hospital you cannot
+reach by ground.
+
+One consequence worth knowing: if you bomb ground you cannot see, you will not
+be told what you hit. The plane flies; the fog keeps its own counsel.
 
 **Research** happens at the Command Post, one project at a time, and applies to
 your whole force permanently: Weapons I/II (+1 attack each), Armour I/II (+4
@@ -340,21 +370,41 @@ production line, never researches and never expands; a Veteran masses an army
 before committing, counter-picks its production, comes home when its base is
 threatened, and builds forward depots to grow its cap — both the ones that put
 a node in range and, once it is capped with money to spare, ones bought purely
-for the ceiling. When difficulty varied
-only in how a bot *fought*, the economy decided matches instead and every level
-converged on a coin flip.
+for the ceiling. Moderate and above raise a Field Hospital, walk their
+casualties back to it and promote whoever has earned it; Veteran and Cyborg
+also run an Airfield and call strikes, scoring each target by what is under the
+blast with their own troops subtracted. When difficulty varied only in how a
+bot *fought*, the economy decided matches instead and every level converged on
+a coin flip.
 
-Veteran beats Novice 8 games in 8, in a median of 53 turns.
+Veteran, Cyborg and Moderate each beat Novice 8 games in 8, in a median of
+38–49 turns.
 
 Bots march while crossing open ground and only advance once contact is near,
 which matters more than it sounds: reinforcements appear at home, so anything
 that slows an attacker across the map quietly hands the game to the defender.
 
-**Known limitation:** two bots of the *same* skill run identical economies and
-grind for a long time — a median of 120–160 turns, and sometimes past 200. That
-is symmetric AI doing what symmetric AI does in any RTS; a human on either side
-breaks it immediately. Mismatched bots, which is what a real game is, settle in
-45–65 turns.
+**Known limitation: the tiers above Moderate are not really ordered.** Measured
+over eight matches each, Moderate beats both Veteran and Cyborg. The labels are
+honest about *behaviour* — a Veteran really does mass a larger army, counter-pick
+harder and run a wider economy — but that behaviour is not currently worth more
+than Moderate's. Play Moderate if you want the stiffest opponent.
+
+The obvious culprit is caution, and it is not: sweeping the "gather this many
+fighters before committing" threshold across every value from 3 to 7 leaves the
+result unchanged at 1-6. Whatever is wrong is somewhere else, and finding it is
+its own job rather than a number to nudge.
+
+This predates the support systems rather than being caused by them: with
+Hospitals, Airfields and promotion switched off entirely, Cyborg still lost to
+Moderate 1-4 and Veteran managed only 2-2. What those systems changed is that
+the matches now *finish* — the inversion used to be hidden behind a 4-in-8
+unresolved rate.
+
+Two bots of the same skill used to grind past 200 turns with 5 matches in 8
+never resolving at all. Giving a surplus somewhere to go fixed that as a side
+effect: a Veteran mirror now settles in a median of 135 turns, 8 times out of 8.
+Mismatched bots settle in 38–96.
 
 ---
 
@@ -436,7 +486,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 244 tests
+python3 -m pytest          # 261 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

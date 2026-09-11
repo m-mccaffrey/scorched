@@ -32,6 +32,11 @@ class Unit:
     rerouted: bool = False
     #: An Engineer's outstanding construction job: (building code, tile).
     job: tuple | None = None
+    #: Promotions earned, 0 through ``units.max_rank()``.
+    rank: int = 0
+    #: Has this unit fought since its last promotion? Supply alone does not
+    #: make a veteran -- a unit has to have been in a fight to be eligible.
+    blooded: bool = False
 
     def __post_init__(self) -> None:
         if not self.max_hp:
@@ -57,6 +62,7 @@ class Unit:
         return {"uid": self.uid, "owner": self.owner, "code": self.code,
                 "x": self.x, "y": self.y, "hp": self.hp, "max": self.max_hp,
                 "stance": self.stance, "path": [list(t) for t in self.path],
+                "rank": self.rank, "blooded": self.blooded,
                 "job": list(self.job[1]) + [self.job[0]] if self.job else None}
 
 

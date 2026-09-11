@@ -22,9 +22,12 @@ from __future__ import annotations
 from .fog import VisionCache, team_vision
 from .grid import COST_OPEN, NEIGHBOURS, chebyshev, find_path
 from .state import Building, MatchState, Unit
-from .units import (BUILDING, RESEARCH_BY_CODE, UNIT, attack_bonus,
-                    available_research, build_turns_for, cost_of_building,
-                    damage_between, damage_to_building, hp_bonus)
+from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, BUILDING,
+                    MEDIC_HEAL_COST, OFFICER_AURA, OFFICER_AURA_RADIUS,
+                    OFFICER_RANK, RANK_ATTACK, RANK_HP, RESEARCH_BY_CODE, UNIT,
+                    airstrike_damage, attack_bonus, available_research,
+                    build_turns_for, cost_of_building, damage_between,
+                    damage_to_building, hp_bonus, promotion_cost, rank_name)
 
 #: Beats per turn. Twelve divides evenly by every unit speed, which keeps all
 #: movement arithmetic in integers.
@@ -45,6 +48,15 @@ ATTACK_EVERY = 4
 #: at all.
 MOVE_PACE = 8
 ADVANCE_PACE = 7
+
+#: The beat an airstrike lands on: halfway through the turn, not at the start.
+#:
+#: Landing it at beat zero would just hit where everyone was standing when
+#: they wrote their orders, which is no decision at all -- you would be aiming
+#: at a photograph. Halfway through, you are aiming at where you think the
+#: enemy will have got to, which is the same guess the rest of the game asks
+#: you to make.
+AIRSTRIKE_BEAT = SUBTICKS // 2
 
 #: Movement points charged for one tile of open ground (mirrors grid.COST_OPEN).
 POINTS_PER_TILE = COST_OPEN
@@ -122,13 +134,19 @@ def path_toward(tilemap, start, goal, blocked) -> list:
     return []
 
 
-def apply_orders(state: MatchState, orders: dict, result: TurnResult) -> dict:
+def apply_orders(state: MatchState, orders: dict, result: TurnResult,
+                 strikes: list | None = None) -> dict:
     """Validate and commit one turn's orders. Returns per-player rejections.
 
     Supply is charged here, at commit time, so two orders in the same turn
     cannot spend the same credits twice.
+
+    Airstrikes are paid for here but land mid-turn, so they are appended to
+    ``strikes`` for the resolver to drop at :data:`AIRSTRIKE_BEAT`.
     """
     rejected: dict[int, list] = {}
+    if strikes is None:
+        strikes = []
 
     def reject(pid: int, why: str) -> None:
         rejected.setdefault(pid, []).append(why)
@@ -168,14 +186,14 @@ def apply_orders(state: MatchState, orders: dict, result: TurnResult) -> dict:
             continue
         for order in player_orders:
             try:
-                _apply_one(state, player, order, occupancy, result)
+                _apply_one(state, player, order, occupancy, result, strikes)
             except OrderError as exc:
                 reject(pid, str(exc))
     return rejected
 
 
 def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
-               result: TurnResult) -> None:
+               result: TurnResult, strikes: list) -> None:
     kind = str(order.get("o", ""))
 
     if kind in ("move", "attack"):
@@ -266,6 +284,45 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
         player.supply -= project.cost
         building.project = [code, project.turns]
 
+    elif kind == "promote":
+        unit = state.units.get(int(order.get("uid", -1)))
+        if unit is None or unit.owner != player.pid or not unit.alive:
+            raise OrderError("no such unit")
+        price = promotion_cost(unit.rank)
+        if not price:
+            raise OrderError(f"{unit.type.name} cannot rise any further")
+        if not unit.blooded:
+            raise OrderError(
+                f"{unit.type.name} has not been in a fight since its last "
+                "promotion")
+        if player.supply < price:
+            raise OrderError(f"not enough supply to promote ({price})")
+        player.supply -= price
+        unit.rank += 1
+        # Each rank has to be earned again, so a unit that traded one shot
+        # cannot be bought all the way to Lieutenant in a single turn.
+        unit.blooded = False
+        unit.max_hp += RANK_HP
+        unit.hp = unit.max_hp          # a promotion is also a night off
+        result.add(0, "promote", uid=unit.uid, rank=unit.rank,
+                   at=list(unit.tile), name=rank_name(unit.rank))
+
+    elif kind == "airstrike":
+        building = state.buildings.get(int(order.get("bid", -1)))
+        target = _tile(order.get("to"))
+        if building is None or building.owner != player.pid:
+            raise OrderError("no such building")
+        if not BUILDING[building.code].airstrikes or not building.operational:
+            raise OrderError("airstrikes are called from an Airfield")
+        if target is None or not state.map.inside(*target):
+            raise OrderError("target off the map")
+        if any(strike[0] == building.bid for strike in strikes):
+            raise OrderError(f"{building.type.name} has already flown today")
+        if player.supply < AIRSTRIKE_COST:
+            raise OrderError(f"an airstrike costs {AIRSTRIKE_COST} supply")
+        player.supply -= AIRSTRIKE_COST
+        strikes.append((building.bid, player.pid, target))
+
     elif kind == "cancel":
         building = state.buildings.get(int(order.get("bid", -1)))
         if building is None or building.owner != player.pid or not building.queue:
@@ -314,20 +371,115 @@ class Resolver:
         self.occupancy = state.occupancy()
         self._cache = VisionCache(state.map)
         self._teams = sorted({p.team for p in state.players.values()})
+        self._strikes: list = []
+        #: Units under medical care this turn, settled before a shot is fired.
+        self.patients: dict = {}
 
     def run(self, orders: dict) -> tuple[TurnResult, dict]:
-        rejected = apply_orders(self.state, orders, self.result)
+        rejected = apply_orders(self.state, orders, self.result, self._strikes)
         self.occupancy = self.state.occupancy()
         for unit in self.state.units.values():
             unit.rerouted = False              # one detour per unit per turn
+        self._admit_patients()
         self._snapshot_vision(0)
         for beat in range(1, SUBTICKS + 1):
             moved = self._move_beat(beat)
+            if beat == AIRSTRIKE_BEAT:
+                self._airstrikes(beat)
             if beat % ATTACK_EVERY == 0:
                 self._combat_beat(beat)
             self._snapshot_vision(beat, reuse=not moved)
         self._end_of_turn()
         return self.result, rejected
+
+    # -- medical -----------------------------------------------------------
+    def _admit_patients(self) -> None:
+        """Decide who is under care before the shooting starts.
+
+        Care is opt-in: a unit is a patient only if it was told to hold, is
+        hurt, and is already standing inside a friendly Field Hospital's
+        radius. Marching past your own hospital must never quietly disarm a
+        unit, and the whole point of the building is that the trade is a
+        decision -- you give up a rifle for the turn to get the health back.
+
+        Settled once, up front, because healing is paid out at the end of the
+        turn and the no-shooting rule applies from the start of it.
+        """
+        for building in sorted(self.state.buildings.values(),
+                               key=lambda b: b.bid):
+            info = BUILDING[building.code]
+            if not building.alive or not building.operational or not info.heal:
+                continue
+            for unit in sorted(self.state.units.values(), key=lambda u: u.uid):
+                if not unit.alive or unit.uid in self.patients:
+                    continue
+                if not self.state.allied(unit.owner, building.owner):
+                    continue
+                if unit.stance != "hold" or unit.hp >= unit.max_hp:
+                    continue
+                if chebyshev(unit.tile, building.tile) <= info.heal_radius:
+                    self.patients[unit.uid] = building.bid
+
+    def _treat_patients(self, beat: int) -> None:
+        """Pay for and apply a turn's healing.
+
+        Metered, not free: every point costs supply, so a hospital is a place
+        to spend a surplus rather than a one-off purchase that makes attrition
+        stop mattering. A player who cannot pay simply gets less healing.
+        """
+        for uid, bid in sorted(self.patients.items()):
+            unit = self.state.units.get(uid)
+            building = self.state.buildings.get(bid)
+            if unit is None or not unit.alive:
+                continue
+            if building is None or not building.alive or not building.operational:
+                continue
+            player = self.state.players.get(unit.owner)
+            if player is None:
+                continue
+            wanted = min(BUILDING[building.code].heal, unit.max_hp - unit.hp)
+            if wanted <= 0:
+                continue
+            afforded = min(wanted, player.supply // MEDIC_HEAL_COST)
+            if afforded <= 0:
+                continue
+            player.supply -= afforded * MEDIC_HEAL_COST
+            unit.hp += afforded
+            self.result.add(beat, "heal", uid=unit.uid, bid=bid,
+                            amount=afforded, hp=unit.hp, at=list(unit.tile))
+
+    # -- air support -------------------------------------------------------
+    def _airstrikes(self, beat: int) -> None:
+        """Drop every strike bought this turn, in a fixed order.
+
+        The blast does not care whose troops are underneath it. That is the
+        whole balance of the thing: an airstrike is cheap enough to use often
+        and indiscriminate enough that using it on a melee costs you as much
+        as it costs them.
+        """
+        for bid, pid, target in sorted(self._strikes):
+            airfield = self.state.buildings.get(bid)
+            if airfield is None or not airfield.alive:
+                continue                      # the field was bombed first
+            self.result.add(beat, "strike", bid=bid, pid=pid, at=list(target),
+                            radius=AIRSTRIKE_RADIUS)
+            casualties = []
+            for unit in sorted(self.state.units.values(), key=lambda u: u.uid):
+                if not unit.alive:
+                    continue
+                damage = airstrike_damage(chebyshev(unit.tile, target))
+                if damage:
+                    casualties.append((unit, damage))
+            for building in sorted(self.state.buildings.values(),
+                                   key=lambda b: b.bid):
+                if not building.alive:
+                    continue
+                damage = airstrike_damage(chebyshev(building.tile, target))
+                if damage:
+                    casualties.append((building, damage))
+            for victim, damage in casualties:
+                self._shoot(beat, -bid, target, victim, lambda _v, d=damage: d,
+                            blood=False)
 
     # -- movement ----------------------------------------------------------
     def _order_of_action(self) -> list:
@@ -410,10 +562,12 @@ class Resolver:
         for unit in self._order_of_action():
             if not unit.alive:
                 continue
+            if unit.uid in self.patients:
+                continue                     # under care: no rifle this turn
             target = self._find_target_at(unit.tile, unit.type.reach, unit.owner)
             if target is None:
                 continue
-            bonus = self._attack_bonus(unit.owner)
+            bonus = self._unit_attack_bonus(unit)
             self._shoot(beat, unit.uid, unit.tile, target,
                         lambda tgt, code=unit.code, b=bonus: (
                             damage_between(code, tgt.code, b)
@@ -430,16 +584,51 @@ class Resolver:
             damage = info.attack + self._attack_bonus(tower.owner)
             self._shoot(beat, -tower.bid, tower.tile, target,
                         lambda _tgt, d=damage: d)
+            # A tower cannot be promoted, but the poor soul it shot at has
+            # certainly been in a fight.
 
     def _attack_bonus(self, pid: int) -> int:
         player = self.state.players.get(pid)
         return attack_bonus(player.research) if player else 0
 
+    def _unit_attack_bonus(self, unit: Unit) -> int:
+        """Research, plus the unit's own rank, plus any officer leading it.
+
+        Only the nearest officer counts. Stacking auras would make a huddle of
+        Lieutenants the whole game, and this way an officer is worth escorting
+        rather than worth hoarding.
+        """
+        bonus = self._attack_bonus(unit.owner) + unit.rank * RANK_ATTACK
+        if unit.rank < OFFICER_RANK and self._led_by_officer(unit):
+            bonus += OFFICER_AURA
+        return bonus
+
+    def _led_by_officer(self, unit: Unit) -> bool:
+        for other in self.state.units.values():
+            if other.uid == unit.uid or not other.alive:
+                continue
+            if other.rank < OFFICER_RANK:
+                continue
+            if not self.state.allied(other.owner, unit.owner):
+                continue
+            if chebyshev(other.tile, unit.tile) <= OFFICER_AURA_RADIUS:
+                return True
+        return False
+
     def _shoot(self, beat: int, shooter_id: int, origin, target,
-               damage_of) -> None:
+               damage_of, blood: bool = True) -> None:
         dealt = max(1, damage_of(target))
         target.hp -= dealt
         is_unit = isinstance(target, Unit)
+        if blood:
+            # Both parties have now been in a fight, which is what makes them
+            # eligible for promotion. Being bombed does not count: a rank has
+            # to be earned against somebody who was shooting back.
+            shooter = self.state.units.get(shooter_id)
+            if shooter is not None:
+                shooter.blooded = True
+            if is_unit:
+                target.blooded = True
         self.result.add(beat, "shoot", uid=shooter_id, at=list(origin),
                         tgt=target.uid if is_unit else target.bid,
                         kind="unit" if is_unit else "building", dmg=dealt,
@@ -526,6 +715,7 @@ class Resolver:
                 self._tick_research(beat, building)
         self._capture_nodes(beat)
         self._pay_income(beat)
+        self._treat_patients(beat)
         self._settle_eliminations(beat)
 
     def _settle_eliminations(self, beat: int) -> None:

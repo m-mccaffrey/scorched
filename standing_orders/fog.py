@@ -85,7 +85,7 @@ def filter_events(events: list, vision_by_beat: dict, viewer_team: int,
             continue
 
         actor = event.get("uid") if kind != "found" else event.get("bid")
-        if kind in ("found", "ready"):
+        if kind in ("found", "ready", "strike"):
             actor = event.get("bid", actor)
         if owner_of_unit.get((kind, actor)) == viewer_team:
             out.append(event)
@@ -112,6 +112,9 @@ def visible_state(state, viewer_pid: int, vision: frozenset) -> dict:
             # Seeing a unit tells you where it is, not what it was told to do.
             wire.pop("path", None)
             wire.pop("stance", None)
+            # Rank stays: an enemy officer is meant to be a visible target.
+            # Whether they are due a promotion is not your business.
+            wire.pop("blooded", None)
         units.append(wire)
     buildings = []
     for building in state.buildings.values():

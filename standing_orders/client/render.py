@@ -266,7 +266,19 @@ class Renderer:
                              pygame.Rect(cx - 7, cy - 7, 15, 15), 1)
         if not ghost:
             self._hp_pip(dest, pygame.Rect(cx - 6, cy - 8, 13, 12),
-                         unit.get("hp", 1), UNIT[code].hp)
+                         unit.get("hp", 1), unit.get("max") or UNIT[code].hp)
+            self._rank_pips(dest, cx, cy, unit.get("rank", 0))
+
+    def _rank_pips(self, dest, cx: int, cy: int, rank: int) -> None:
+        """Chevrons down the unit's left side, one per rank.
+
+        Down the side rather than above the head, where the health hairline
+        already lives -- and gold, because a promoted unit is the one thing on
+        the board worth picking out of a crowd at a glance.
+        """
+        for index in range(min(rank, 3)):
+            dest.fill((22, 18, 10), (cx - 8, cy - 4 + index * 3, 3, 2))
+            dest.fill(UI_ACCENT, (cx - 8, cy - 4 + index * 3, 2, 1))
 
     def _hp_pip(self, dest, rect, hp: int, full: int) -> None:
         """A hairline of health, only when hurt.

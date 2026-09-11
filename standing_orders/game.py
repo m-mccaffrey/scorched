@@ -226,11 +226,11 @@ class Match:
         for event in result.events:
             actor = event.get("uid")
             kind = event["e"]
-            if kind in ("move", "block", "shoot", "spawn"):
+            if kind in ("move", "block", "shoot", "spawn", "promote", "heal"):
                 unit = self.state.units.get(actor)
                 if unit is not None:
                     owner_lookup[(kind, actor)] = self.state.team_of(unit.owner)
-            elif kind in ("found", "ready"):
+            elif kind in ("found", "ready", "strike"):
                 building = self.state.buildings.get(event.get("bid"))
                 if building is not None:
                     owner_lookup[(kind, building.bid)] = \

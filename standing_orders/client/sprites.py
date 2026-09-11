@@ -224,7 +224,47 @@ WALL = [
     "..............",
 ]
 
+# A field hospital: a canvas tent with the flaps open and a cross on the roof.
+# Deliberately the only white-and-cloth structure on the board, so "the place
+# the wounded go" reads at a glance without anybody hovering it.
+MEDIC = [
+    "..............",
+    "......##......",
+    ".....#88#.....",
+    "....#8886#....",
+    "...#88666#....",
+    "..#888666888#.",
+    "..#886666688#.",
+    ".#8886668888#.",
+    ".#8888888888#.",
+    ".#88#8888#88#.",
+    ".#88#8118#88#.",
+    ".#88#8118#88#.",
+    ".############.",
+    "..............",
+]
+
+# An airfield: a strip with a marked threshold and a small aircraft on it.
+AIRFIELD = [
+    "..............",
+    ".############.",
+    ".#7777777777#.",
+    ".#7#4#7#4#77#.",
+    ".#77777777#7#.",
+    ".#777#11#777#.",
+    ".#77#1111#77#.",
+    ".#7#111111#7#.",
+    ".#77##11##77#.",
+    ".#777#11#777#.",
+    ".#77777777#7#.",
+    ".#7#4#7#4#77#.",
+    ".############.",
+    "..............",
+]
+
 BUILDING_ART = {
+    "medic": MEDIC,
+    "airfield": AIRFIELD,
     "depot": DEPOT,
     "tower": TOWER,
     "wall": WALL,

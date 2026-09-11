@@ -154,3 +154,45 @@ def test_seeing_an_enemy_does_not_reveal_its_orders():
     assert "stance" not in by_uid[theirs.uid]
     # Your own orders still come back, because the client draws them.
     assert by_uid[mine.uid]["path"] == [[4, 5]]
+
+
+def test_rank_is_public_but_readiness_for_promotion_is_not():
+    """An enemy officer is meant to be a visible target. Whether they are one
+    promotion away from being a better one is your own business."""
+    state = arena()
+    state.add_unit(0, "scout", 6, 5)
+    theirs = state.add_unit(1, "trooper", 7, 5)
+    theirs.rank = 2
+    theirs.blooded = True
+
+    vision = team_vision(state, 0, VisionCache(state.map))
+    view = visible_state(state, 0, vision)
+    seen = next(u for u in view["units"] if u["uid"] == theirs.uid)
+    assert seen["rank"] == 2
+    assert "blooded" not in seen
+
+
+def test_bombing_the_dark_tells_you_nothing_about_what_you_hit():
+    """You always know your own plane flew. What it landed on is another
+    matter -- the fog keeps its own counsel."""
+    from standing_orders.game import Match, Settings
+    match = Match(Settings(map_name="duel"))
+    match.add_player("A")
+    match.add_player("B")
+    match.start_match()
+    state = match.state
+    state.players[0].supply = 500
+    field = state.add_building(0, "airfield", 5, 5, under=0)
+    far = max(state.buildings.values(), key=lambda b: b.bid if b.owner == 1 else -1)
+    victim = state.add_unit(1, "trooper", far.x, far.y - 1)
+
+    match.submit(0, [{"o": "airstrike", "bid": field.bid,
+                      "to": [victim.x, victim.y]}])
+    match.submit(1, [])
+    timelines = match.resolve()
+
+    bomber = [e["e"] for e in timelines[0]["events"]]
+    bombed = [e["e"] for e in timelines[1]["events"]]
+    assert bomber.count("strike") == 1, "you always know your own plane flew"
+    assert "shoot" not in bomber, "but not what it found in the dark"
+    assert bombed.count("strike") == 1 and "shoot" in bombed

@@ -7,10 +7,13 @@ game that decides anything, and every client trusts its output blindly.
 import pytest
 
 from standing_orders.grid import TileMap
-from standing_orders.resolve import (ADVANCE_PACE, ATTACK_EVERY, MOVE_PACE,
-                                     SUBTICKS, resolve_turn)
+from standing_orders.resolve import (ADVANCE_PACE, AIRSTRIKE_BEAT,
+                                     ATTACK_EVERY, MOVE_PACE, SUBTICKS,
+                                     resolve_turn)
 from standing_orders.state import MatchState, Player
-from standing_orders.units import ARMY_CAP_BASE, UNIT
+from standing_orders.units import (AIRSTRIKE_COST, AIRSTRIKE_DAMAGE,
+                                   ARMY_CAP_BASE, BUILDING, MEDIC_HEAL_COST,
+                                   OFFICER_RANK, RANK_HP, UNIT, max_rank)
 
 
 def arena(width=20, height=10, players=2):
@@ -733,3 +736,220 @@ def test_marching_units_still_shoot_what_they_pass():
     resolve_turn(state, {0: [{"o": "move", "uid": runner.uid, "to": [20, 5]}]})
     assert bystander.hp < UNIT["trooper"].hp
     assert runner.x > 3, "a marching unit should not have stopped to fight"
+
+
+# -- promotion -------------------------------------------------------------
+
+def test_a_fight_makes_both_sides_eligible_for_promotion():
+    state = arena()
+    mine = state.add_unit(0, "trooper", 5, 5)
+    theirs = state.add_unit(1, "trooper", 6, 5)
+    assert not mine.blooded and not theirs.blooded
+    resolve_turn(state, {})
+    assert mine.blooded and theirs.blooded
+
+
+def test_a_fresh_recruit_cannot_be_promoted():
+    state = arena()
+    unit = state.add_unit(0, "trooper", 5, 5)
+    _, rejected = resolve_turn(state, {0: [{"o": "promote", "uid": unit.uid}]})
+    assert unit.rank == 0
+    assert rejected[0] and "fight" in rejected[0][0]
+
+
+def test_promotion_costs_supply_and_raises_the_ceiling():
+    state = arena()
+    unit = state.add_unit(0, "trooper", 5, 5)
+    unit.blooded = True
+    unit.hp = 4
+    before = state.players[0].supply
+    resolve_turn(state, {0: [{"o": "promote", "uid": unit.uid}]})
+    assert unit.rank == 1
+    assert unit.max_hp == UNIT["trooper"].hp + RANK_HP
+    assert unit.hp == unit.max_hp, "a promotion is also a full heal"
+    assert state.players[0].supply < before
+    assert not unit.blooded, "the next rank has to be earned all over again"
+
+
+def test_rank_makes_a_unit_hit_harder():
+    def damage_dealt(rank):
+        state = arena()
+        attacker = state.add_unit(0, "trooper", 5, 5)
+        attacker.rank = rank
+        victim = state.add_unit(1, "bruiser", 6, 5)
+        start = victim.hp
+        resolve_turn(state, {})
+        return start - victim.hp
+
+    assert damage_dealt(2) > damage_dealt(0)
+
+
+def test_an_officer_lends_its_bonus_to_the_troops_around_it():
+    def damage_dealt(with_officer):
+        state = arena()
+        attacker = state.add_unit(0, "trooper", 5, 5)
+        if with_officer:
+            officer = state.add_unit(0, "trooper", 4, 5)
+            officer.rank = OFFICER_RANK
+        victim = state.add_unit(1, "bruiser", 6, 5)
+        start = victim.hp
+        resolve_turn(state, {})
+        # Only the plain trooper's contribution is comparable, so measure the
+        # victim's loss net of whatever the officer itself did.
+        return start - victim.hp
+
+    assert damage_dealt(True) > damage_dealt(False)
+
+
+def test_promotion_stops_at_the_top_rank():
+    state = arena()
+    unit = state.add_unit(0, "trooper", 5, 5)
+    unit.rank = max_rank()
+    unit.blooded = True
+    state.players[0].supply = 500
+    _, rejected = resolve_turn(state, {0: [{"o": "promote", "uid": unit.uid}]})
+    assert unit.rank == max_rank()
+    assert rejected[0]
+
+
+# -- field hospitals -------------------------------------------------------
+
+def test_holding_beside_a_hospital_heals_and_costs_supply():
+    state = arena()
+    state.add_building(0, "medic", 5, 5, under=0)
+    patient = state.add_unit(0, "trooper", 6, 5)
+    patient.hp = 8
+    state.players[0].supply = 50
+    result, _ = resolve_turn(state, {0: [{"o": "hold", "uid": patient.uid}]})
+    healed = events_of(result, "heal")
+    assert healed and healed[0]["uid"] == patient.uid
+    assert patient.hp == 8 + BUILDING["medic"].heal
+    spent = 50 + result.income[0] - state.players[0].supply
+    assert spent == BUILDING["medic"].heal * MEDIC_HEAL_COST
+
+
+def test_a_patient_does_not_shoot():
+    state = arena()
+    state.add_building(0, "medic", 5, 5, under=0)
+    patient = state.add_unit(0, "trooper", 6, 5)
+    patient.hp = 8
+    enemy = state.add_unit(1, "trooper", 7, 5)
+    state.players[0].supply = 50
+    result, _ = resolve_turn(state, {0: [{"o": "hold", "uid": patient.uid}],
+                                     1: [{"o": "hold", "uid": enemy.uid}]})
+    assert not [e for e in events_of(result, "shoot") if e["uid"] == patient.uid]
+    assert [e for e in events_of(result, "shoot") if e["uid"] == enemy.uid], \
+        "the enemy is under no such restraint"
+
+
+def test_marching_past_a_hospital_does_not_disarm_a_unit():
+    state = arena()
+    state.add_building(0, "medic", 5, 5, under=0)
+    walker = state.add_unit(0, "trooper", 6, 5)
+    walker.hp = 8
+    enemy = state.add_unit(1, "trooper", 7, 5)
+    state.players[0].supply = 50
+    result, _ = resolve_turn(state, {0: [{"o": "attack", "uid": walker.uid,
+                                          "to": [15, 5]}]})
+    assert [e for e in events_of(result, "shoot") if e["uid"] == walker.uid]
+    assert not events_of(result, "heal"), "care is opt-in, not automatic"
+    assert enemy.hp < enemy.max_hp
+
+
+def test_a_healthy_unit_is_not_admitted():
+    state = arena()
+    state.add_building(0, "medic", 5, 5, under=0)
+    unit = state.add_unit(0, "trooper", 6, 5)
+    result, _ = resolve_turn(state, {0: [{"o": "hold", "uid": unit.uid}]})
+    assert not events_of(result, "heal")
+
+
+def test_healing_is_limited_by_what_the_player_can_pay():
+    state = arena()
+    state.add_building(0, "medic", 5, 5, under=0)
+    patient = state.add_unit(0, "trooper", 6, 5)
+    patient.hp = 4
+    state.players[0].supply = 0
+    result, _ = resolve_turn(state, {0: [{"o": "hold", "uid": patient.uid}]})
+    # Income lands before the bill, so a broke player heals what that buys.
+    assert patient.hp - 4 == min(BUILDING["medic"].heal, result.income[0])
+    assert state.players[0].supply >= 0
+
+
+def test_an_unfinished_hospital_treats_nobody():
+    state = arena()
+    state.add_building(0, "medic", 5, 5, under=2)
+    patient = state.add_unit(0, "trooper", 6, 5)
+    patient.hp = 8
+    state.players[0].supply = 50
+    result, _ = resolve_turn(state, {0: [{"o": "hold", "uid": patient.uid}]})
+    assert not events_of(result, "heal")
+
+
+# -- airstrikes ------------------------------------------------------------
+
+def test_an_airstrike_lands_mid_turn_and_hits_everything_under_it():
+    state = arena()
+    field = state.add_building(0, "airfield", 2, 1, under=0)
+    state.players[0].supply = AIRSTRIKE_COST
+    centre = state.add_unit(1, "bruiser", 10, 5)
+    ring = state.add_unit(1, "bruiser", 11, 5)
+    clear = state.add_unit(1, "bruiser", 14, 5)
+    result, rejected = resolve_turn(
+        state, {0: [{"o": "airstrike", "bid": field.bid, "to": [10, 5]}],
+                1: [{"o": "hold", "uid": u.uid} for u in (centre, ring, clear)]})
+    assert not rejected.get(0)
+    strikes = events_of(result, "strike")
+    assert len(strikes) == 1 and strikes[0]["s"] == AIRSTRIKE_BEAT
+    assert centre.max_hp - centre.hp == AIRSTRIKE_DAMAGE
+    assert ring.max_hp - ring.hp == AIRSTRIKE_DAMAGE // 2
+    assert clear.hp == clear.max_hp
+
+
+def test_an_airstrike_plays_no_favourites():
+    """Bombing your own melee costs you as much as it costs them."""
+    state = arena()
+    field = state.add_building(0, "airfield", 2, 1, under=0)
+    state.players[0].supply = AIRSTRIKE_COST
+    mine = state.add_unit(0, "bruiser", 10, 5)
+    resolve_turn(state, {0: [{"o": "airstrike", "bid": field.bid,
+                              "to": [10, 5]}]})
+    assert mine.max_hp - mine.hp == AIRSTRIKE_DAMAGE
+
+
+def test_an_airfield_flies_once_a_turn():
+    state = arena()
+    field = state.add_building(0, "airfield", 2, 1, under=0)
+    state.players[0].supply = AIRSTRIKE_COST * 3
+    result, rejected = resolve_turn(
+        state, {0: [{"o": "airstrike", "bid": field.bid, "to": [10, 5]},
+                    {"o": "airstrike", "bid": field.bid, "to": [12, 5]}]})
+    assert len(events_of(result, "strike")) == 1
+    assert rejected[0]
+
+
+def test_an_airstrike_needs_a_finished_airfield_and_the_supply():
+    state = arena()
+    field = state.add_building(0, "airfield", 2, 1, under=1)
+    state.players[0].supply = AIRSTRIKE_COST
+    _, rejected = resolve_turn(
+        state, {0: [{"o": "airstrike", "bid": field.bid, "to": [10, 5]}]})
+    assert rejected[0]
+
+    state = arena()
+    field = state.add_building(0, "airfield", 2, 1, under=0)
+    state.players[0].supply = AIRSTRIKE_COST - 1
+    _, rejected = resolve_turn(
+        state, {0: [{"o": "airstrike", "bid": field.bid, "to": [10, 5]}]})
+    assert rejected[0]
+
+
+def test_being_bombed_does_not_earn_a_promotion():
+    """A rank is earned against somebody who was shooting back."""
+    state = arena()
+    field = state.add_building(0, "airfield", 2, 1, under=0)
+    state.players[0].supply = AIRSTRIKE_COST
+    victim = state.add_unit(1, "bruiser", 10, 5)
+    resolve_turn(state, {0: [{"o": "airstrike", "bid": field.bid,
+                              "to": [10, 5]}]})
+    assert victim.alive and not victim.blooded

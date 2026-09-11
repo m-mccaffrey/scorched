@@ -18,8 +18,9 @@ from dataclasses import dataclass
 
 from .fog import VisionCache, team_vision
 from .grid import chebyshev, manhattan
-from .units import (ARMY_CAP_MAX, HARVEST_RADIUS, UNIT, available_research,
-                    cost_of_building)
+from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, ARMY_CAP_MAX, BUILDING,
+                    HARVEST_RADIUS, UNIT, available_research,
+                    cost_of_building, max_rank, promotion_cost)
 
 @dataclass(frozen=True)
 class Skill:
@@ -38,13 +39,19 @@ class Skill:
     researches: bool      # spends surplus on upgrades
     barracks: int         # production lines it will run at once
     expands: bool         # builds forward depots to grow its cap
+    #: How much of the support game it plays. 0 none at all; 1 raises a Field
+    #: Hospital, pulls its wounded back to it and promotes veterans; 2 also
+    #: runs an Airfield and calls strikes. Graded rather than a flag because
+    #: these are the most expensive things in the game, and a bot that buys
+    #: them badly is worse off than one that never buys them.
+    supports: int
 
 
 SKILLS = {
-    "novice": Skill(2, 0.0, False, 1, False, 1, False),
-    "moderate": Skill(4, 0.4, True, 2, True, 2, True),
-    "veteran": Skill(6, 0.85, True, 3, True, 3, True),
-    "cyborg": Skill(7, 1.0, True, 4, True, 3, True),
+    "novice": Skill(2, 0.0, False, 1, False, 1, False, 0),
+    "moderate": Skill(4, 0.4, True, 2, True, 2, True, 1),
+    "veteran": Skill(6, 0.85, True, 3, True, 3, True, 2),
+    "cyborg": Skill(7, 1.0, True, 4, True, 3, True, 2),
 }
 SKILL_ORDER = ("novice", "moderate", "veteran", "cyborg")
 
@@ -63,6 +70,29 @@ EXPAND_SURPLUS = 26
 RESEARCH_BUFFER = 20
 
 DEFEND_RADIUS = 7
+
+#: Supply a bot keeps back before buying into the support game at all. These
+#: are luxuries: an Airfield bought instead of an army loses the match before
+#: it ever gets to fly.
+SUPPORT_BUFFER = 40
+
+#: Promotions a bot will buy in one turn, and the surplus it insists on
+#: keeping while it does. Both exist to stop ranks crowding out the army.
+PROMOTIONS_PER_TURN = 1
+PROMOTE_BUFFER = 60
+
+#: A unit this far below full health is worth walking back to a hospital.
+#: Higher than it looks on purpose -- a unit that trudges home over a scratch
+#: spends more turns off the line than the health is worth.
+WOUNDED_SHARE = 0.5
+
+#: Enemies that have to be within one blast for a strike to be worth 30
+#: supply. Two is about break-even against what it costs to replace them.
+STRIKE_WORTH = 2
+
+#: Supply held back from a strike. Far shallower than the reserve the other
+#: luxuries keep, because a strike is the only one that pays off this turn.
+STRIKE_RESERVE = 10
 
 #: How much stronger than the visible enemy force a bot wants to be before it
 #: stops trading in the middle and marches on a Command Post.
@@ -170,6 +200,7 @@ class BotBrain:
     def _economy(self, match, me, my_buildings, my_units, enemies,
                  busy=frozenset()) -> list:
         state = match.state
+        busy = set(busy)
         orders: list = []
         budget = me.supply
         bases = [b for b in my_buildings if b.code == "base" and b.operational]
@@ -189,6 +220,41 @@ class BotBrain:
         if not bases:
             return orders
 
+        def hands_for(price: int, pull_at: int):
+            """An Engineer for a support building, idle or otherwise.
+
+            Engineers park on resource nodes and stay there, so after the
+            opening there is essentially never an idle one -- which is why
+            bots measured zero Hospitals and zero Airfields built in a whole
+            match while sitting on hundreds of spare supply. A rich bot can
+            afford to take an Engineer off a node for two turns.
+
+            Only the support rules use this. Letting the economy rules bid the
+            same way was worse, not better: whichever rule ran first took the
+            Engineer, and a bot that spent its last one on a third Barracks
+            never built a Depot at all.
+            """
+            if idle_workers:
+                return idle_workers[0]
+            if budget < price + pull_at:
+                return None
+            # Never take the last Engineer off the last node -- somebody has
+            # to stay and work, or the surplus that justified this dries up.
+            free = [w for w in workers
+                    if w is not None and w.job is None and w.uid not in busy]
+            spare = [w for w in free if w.uid not in earning]
+            if spare:
+                return spare[0]
+            earners = [w for w in free if w.uid in earning]
+            return earners[0] if len(earners) > 1 else None
+
+        def commit(worker, code: str, site) -> None:
+            if worker in idle_workers:
+                idle_workers.remove(worker)
+            busy.add(worker.uid)
+            orders.append({"o": "build", "uid": worker.uid, "code": code,
+                           "to": list(site)})
+
         # 1. A depot wherever we are working, or want to work, a node. Without
         #    one in range the Engineer standing on the node sends nothing.
         for worker in (list(idle_workers) if SKILLS[self.skill].expands else []):
@@ -199,9 +265,7 @@ class BotBrain:
             site = self._site_near(state, node)
             if site is None:
                 continue
-            orders.append({"o": "build", "uid": worker.uid, "code": "depot",
-                           "to": list(site)})
-            idle_workers.remove(worker)
+            commit(worker, "depot", site)
             budget -= price
             depots = depots + [None]           # counts toward the cap estimate
             break
@@ -219,9 +283,7 @@ class BotBrain:
             if budget >= price + EXPAND_SURPLUS:
                 site = self._site_near(state, bases[0].tile, radius=4)
                 if site is not None:
-                    worker = idle_workers.pop(0)
-                    orders.append({"o": "build", "uid": worker.uid,
-                                   "code": "depot", "to": list(site)})
+                    commit(idle_workers[0], "depot", site)
                     budget -= price
 
         # 2. Barracks: the gate to the counter triangle -- but only once the
@@ -232,9 +294,7 @@ class BotBrain:
                 and budget >= price + BARRACKS_BUFFER):
             site = self._site_near(state, bases[0].tile, radius=4)
             if site is not None:
-                worker = idle_workers.pop(0)
-                orders.append({"o": "build", "uid": worker.uid,
-                               "code": "barracks", "to": list(site)})
+                commit(idle_workers[0], "barracks", site)
                 budget -= price
 
         # 3. More production once the economy outruns one Barracks.
@@ -243,9 +303,67 @@ class BotBrain:
                 and idle_workers and budget >= price + EXPAND_SURPLUS):
             site = self._site_near(state, bases[0].tile, radius=5)
             if site is not None:
-                worker = idle_workers.pop(0)
-                orders.append({"o": "build", "uid": worker.uid,
-                               "code": "barracks", "to": list(site)})
+                commit(idle_workers[0], "barracks", site)
+                budget -= price
+
+        # 3b. Support buildings, once there is an army worth supporting. A
+        #     Field Hospital first -- it pays back every turn there is a
+        #     casualty -- and an Airfield only for bots that will actually fly
+        #     it. Both are luxuries, so both wait behind a healthy buffer.
+        tier = SKILLS[self.skill].supports
+        for code, needed in (("medic", 1), ("airfield", 2)):
+            # Gated on an economy, not on a Barracks. Requiring one meant
+            # these never got built at all, because bots turn out to build a
+            # Barracks far more rarely than they should -- a separate problem,
+            # and not one a Field Hospital has any reason to wait behind.
+            if tier < needed or not depots:
+                continue
+            if any(b.code == code for b in my_buildings):
+                continue
+            price = cost_of_building(code, me.research)
+            # An Airfield has to be bought with its first sortie, or a bot
+            # spends 14 supply and three Engineer-turns on a hangar it cannot
+            # afford to use -- which measured as a straight loss: bots that
+            # built one went from beating Moderate to losing to it 1-5.
+            price += AIRSTRIKE_COST if code == "airfield" else 0
+            if budget < price + SUPPORT_BUFFER:
+                continue
+            worker = hands_for(price, SUPPORT_BUFFER)
+            site = self._site_near(state, bases[0].tile, radius=3)
+            if worker is None or site is None:
+                continue
+            commit(worker, code, site)
+            budget -= cost_of_building(code, me.research)
+
+        # 3c. Airstrikes, before promotions and out of the same purse. These
+        #     used to be planned in the army step against a second, private
+        #     copy of the budget, so a bot happily promised the same supply to
+        #     a strike and a promotion and had one of them thrown out.
+        strike_orders, budget = self._airstrikes(state, me, my_buildings,
+                                                 enemies, budget)
+        orders += strike_orders
+
+        # 3d. Promote whoever has earned it -- but only once quantity has run
+        #     out. Promotions are cheap enough to be tempting every turn, and
+        #     a bot that took them early spent its whole economy on ranks and
+        #     never built a Barracks at all: 175 promotions in a match and no
+        #     production. Buying quality is what you do when you cannot buy
+        #     any more quantity.
+        spare = state.army_cap_of(me.pid) - state.army_size(me.pid)
+        if tier >= 1 and spare <= 2:
+            veterans = sorted((u for u in my_units
+                               if u.blooded and u.rank < max_rank()
+                               and not u.builder),
+                              key=lambda u: (-u.rank, u.uid))
+            # One a turn, behind a deep buffer. Promotions are cheap enough
+            # that a bot allowed to buy them freely will empty its treasury
+            # into ranks the same turn it hits an early, tiny cap -- and an
+            # early cap wants another Depot, not a Corporal.
+            for unit in veterans[:PROMOTIONS_PER_TURN]:
+                price = promotion_cost(unit.rank)
+                if not price or budget < price + PROMOTE_BUFFER:
+                    continue
+                orders.append({"o": "promote", "uid": unit.uid})
                 budget -= price
 
         # 4. Research, once there is money doing nothing useful.
@@ -360,6 +478,27 @@ class BotBrain:
         fighters = [u for u in my_units if u.code not in ("scout", "worker")]
         scouts = [u for u in my_units if u.code == "scout"]
 
+        # 0. Casualties go to the rear. A hospital nobody walks to is 10
+        # supply spent on scenery, and a badly hurt unit sent back into the
+        # line is a free kill for the other side. They are taken off the
+        # roster entirely for the trip -- a stretcher case is not an attacker.
+        wards = [b for b in my_buildings
+                 if BUILDING[b.code].heal and b.operational]
+        if wards and SKILLS[self.skill].supports >= 1:
+            for unit in list(fighters):
+                if unit.hp >= unit.max_hp * WOUNDED_SHARE:
+                    continue
+                ward = min(wards, key=lambda b: manhattan(unit.tile, b.tile))
+                bed = self._bedside(state, ward, unit)
+                if bed is None:
+                    continue
+                fighters.remove(unit)
+                if unit.tile == bed:
+                    orders.append({"o": "hold", "uid": unit.uid})
+                else:
+                    orders.append({"o": "move", "uid": unit.uid,
+                                   "to": list(bed)})
+
         # 1. Home defence, but proportionate. Recalling the whole army every
         # time a lone scout wanders past the base makes two defensive bots
         # yo-yo forever and neither ever commits to a siege -- measured at 7
@@ -444,6 +583,64 @@ class BotBrain:
             if spot is not None:
                 orders.append({"o": "move", "uid": scout.uid, "to": list(spot)})
         return orders
+
+    def _bedside(self, state, ward, unit):
+        """A free tile inside a hospital's radius, or the one already held."""
+        info = BUILDING[ward.code]
+        occupied = set(state.occupancy())
+        best = None
+        for dy in range(-info.heal_radius, info.heal_radius + 1):
+            for dx in range(-info.heal_radius, info.heal_radius + 1):
+                tile = (ward.x + dx, ward.y + dy)
+                if tile == unit.tile:
+                    return tile                # already in a bed
+                if not state.map.passable(*tile) or tile in occupied:
+                    continue
+                distance = manhattan(tile, unit.tile)
+                if best is None or distance < best[0]:
+                    best = (distance, tile)
+        return best[1] if best else None
+
+    def _airstrikes(self, state, me, my_buildings, enemies,
+                    budget: int) -> tuple:
+        """Spend a strike on the densest thing worth bombing.
+
+        Scored by what is actually under the blast, friendly casualties
+        subtracted -- a bot that bombs its own melee is worse than one that
+        never calls a strike at all.
+        """
+        if SKILLS[self.skill].supports < 2 or not enemies:
+            return [], budget
+        fields = [b for b in my_buildings
+                  if BUILDING[b.code].airstrikes and b.operational]
+        orders: list = []
+        aimed: set = set()
+        friends = [u for u in state.units.values()
+                   if u.alive and state.allied(u.owner, me.pid)]
+        for field in sorted(fields, key=lambda b: b.bid):
+            # A strike is the one thing here that pays off the same turn, so
+            # it is funded ahead of promotions and kept behind only a shallow
+            # reserve -- a hangar that never launches is pure overhead.
+            if budget < AIRSTRIKE_COST + STRIKE_RESERVE:
+                break
+            best = None
+            for candidate in {e.tile for e in enemies} - aimed:
+                caught = sum(1 for e in enemies
+                             if chebyshev(e.tile, candidate) <= AIRSTRIKE_RADIUS)
+                friendly = sum(1 for u in friends
+                               if chebyshev(u.tile, candidate) <= AIRSTRIKE_RADIUS)
+                score = caught - friendly
+                if score < STRIKE_WORTH:
+                    continue
+                if best is None or (score, candidate) > best:
+                    best = (score, candidate)
+            if best is None:
+                break
+            aimed.add(best[1])
+            orders.append({"o": "airstrike", "bid": field.bid,
+                           "to": list(best[1])})
+            budget -= AIRSTRIKE_COST
+        return orders, budget
 
     def _pace(self, unit, target, enemies) -> str:
         """March or advance?

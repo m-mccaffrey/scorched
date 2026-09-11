@@ -28,9 +28,10 @@ from ..game import Settings, available_maps
 from ..grid import TileMap, describe, find_path
 from ..server import GAME_ID, SO_PORT, Server
 from ..state import MAX_PLAYERS
-from ..units import (BUILDING, BUILDINGS, HARVEST_RADIUS, HARVEST_RATE,
+from ..units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, BUILDING, BUILDINGS,
+                     HARVEST_RADIUS, HARVEST_RATE, MEDIC_HEAL_COST,
                      RESEARCH_BY_CODE, UNIT, available_research,
-                     cost_of_building, catalogue)
+                     cost_of_building, catalogue, promotion_cost, rank_name)
 from .audio import OrdersSfx
 from .render import (HUD_H, PANEL_W, SCREEN_H, SCREEN_W, TOP_H, Renderer,
                      draw_tooltip)
@@ -87,6 +88,7 @@ class App:
         self.unit_orders: dict[int, dict] = {}
         self.queued: list = []            # train / build orders
         self.placing: str | None = None   # building code awaiting a site
+        self.aiming: int | None = None    # Airfield bid awaiting an aim point
         self.selected_building: int | None = None
         self.drag_anchor: tuple | None = None
         self.ready_sent = False
@@ -159,6 +161,7 @@ class App:
         self.unit_orders.clear()
         self.queued.clear()
         self.placing = None
+        self.aiming = None
         self.selected_building = None
         self.ready_sent = False
 
@@ -537,7 +540,10 @@ class App:
     def _game_key(self, event) -> None:
         key = event.key
         if key == pygame.K_ESCAPE:
-            if self.placing:
+            if self.aiming is not None:
+                self.aiming = None
+                self.status = "Airstrike called off"
+            elif self.placing:
                 self.placing = None
             elif self.selected or self.selected_building is not None:
                 self.selected.clear()
@@ -553,6 +559,8 @@ class App:
             self._send_ready()
         elif key == pygame.K_a and self.selected:
             self.status = "Attack-move: right-click a target"
+        elif key == pygame.K_p and self.selected:
+            self._queue_promotions()
         elif key == pygame.K_TAB:
             self._select_all_units()
 
@@ -567,6 +575,9 @@ class App:
         tile = board.to_tile(event.pos)
 
         if event.button == 1:
+            if tile is not None and self.aiming is not None:
+                self._call_airstrike(tile)
+                return
             if tile is not None and self.placing:
                 self._place_building(tile)
                 return
@@ -685,6 +696,10 @@ class App:
             self.placing = action.split(":")[1]
         elif action.startswith("research:"):
             self._queue_research(action.split(":")[1])
+        elif action == "airstrike":
+            self._begin_airstrike()
+        elif action == "promote":
+            self._queue_promotions()
         elif action == "skip" and self.replay is not None:
             self.replay.skip()
 
@@ -724,6 +739,70 @@ class App:
         self.queued.append({"o": "research", "bid": base["bid"], "code": code})
         self.sfx.play("order")
         self.ready_sent = False
+
+    def _begin_airstrike(self) -> None:
+        """Arm the selected Airfield and wait for an aim point."""
+        if self.selected_building is None:
+            return
+        building = self.view.buildings.get(self.selected_building)
+        if building is None or not BUILDING[building["code"]].airstrikes:
+            return
+        if any(o["o"] == "airstrike" and o["bid"] == building["bid"]
+               for o in self.queued):
+            self._complain("That Airfield has already flown today")
+            self.sfx.play("deny")
+            return
+        if self._spent() + AIRSTRIKE_COST > self.view.supply:
+            self._complain("Not enough supply")
+            self.sfx.play("deny")
+            return
+        self.aiming = building["bid"]
+        self.status = "Airstrike: click the target tile (Esc to call it off)"
+
+    def _call_airstrike(self, tile) -> None:
+        bid, self.aiming = self.aiming, None
+        if bid is None:
+            return
+        self.queued.append({"o": "airstrike", "bid": bid, "to": list(tile)})
+        self.status = (f"Airstrike called on {tile[0]},{tile[1]} -- it lands "
+                       "halfway through the turn")
+        self.sfx.play("order")
+        self.ready_sent = False
+
+    def _queue_promotions(self) -> None:
+        """Promote every selected unit that has earned it and can be paid for.
+
+        Silent about the ones that cannot: selecting the whole army and
+        pressing P should promote who it can, not produce eight complaints.
+        """
+        promoted = 0
+        blocked = ""
+        for uid in sorted(self.selected):
+            unit = self.view.units.get(uid)
+            if unit is None or unit["owner"] != self.my_pid:
+                continue
+            if any(o["o"] == "promote" and o["uid"] == uid for o in self.queued):
+                continue
+            rank = unit.get("rank", 0)
+            price = promotion_cost(rank)
+            if not price:
+                blocked = blocked or "already at the top rank"
+                continue
+            if not unit.get("blooded"):
+                blocked = blocked or "not been in a fight yet"
+                continue
+            if self._spent() + price > self.view.supply:
+                blocked = blocked or "not enough supply"
+                continue
+            self.queued.append({"o": "promote", "uid": uid})
+            promoted += 1
+        if promoted:
+            self.status = f"Promoted {promoted}"
+            self.sfx.play("order")
+            self.ready_sent = False
+        elif blocked:
+            self._complain(f"No promotions: {blocked}")
+            self.sfx.play("deny")
 
     def _place_building(self, tile) -> None:
         """Assign the job to an Engineer, who walks there and builds it."""
@@ -768,6 +847,11 @@ class App:
             elif order["o"] == "research":
                 project = RESEARCH_BY_CODE.get(order["code"])
                 total += project.cost if project else 0
+            elif order["o"] == "airstrike":
+                total += AIRSTRIKE_COST
+            elif order["o"] == "promote":
+                unit = self.view.units.get(order["uid"])
+                total += promotion_cost(unit.get("rank", 0)) if unit else 0
         return total
 
     def _army_size(self) -> int:
@@ -1068,6 +1152,22 @@ class App:
         for order in self.queued:
             if order["o"] == "build":
                 self.renderer.highlight(self.screen, tuple(order["to"]), UI_ACCENT)
+            elif order["o"] == "airstrike":
+                self._draw_blast(tuple(order["to"]))
+        # Every Field Hospital's ward, so it is obvious which tiles heal --
+        # the rule is a radius and a radius you cannot see is a rule you have
+        # to learn by accident.
+        for building in self.view.buildings.values():
+            info = BUILDING.get(building["code"])
+            if (info is not None and info.heal and not building.get("under")
+                    and building["owner"] == self.my_pid):
+                for tile in self._ring((building["x"], building["y"]),
+                                       info.heal_radius):
+                    self.renderer.highlight(self.screen, tile, UI_GOOD)
+        if self.aiming is not None:
+            tile = board.to_tile(self.mouse)
+            if tile is not None:
+                self._draw_blast(tile)
         if self.placing:
             tile = board.to_tile(self.mouse)
             if tile is not None:
@@ -1077,6 +1177,24 @@ class App:
         if self.drag_anchor is not None:
             self.renderer.draw_selection_box(self.screen, self.drag_anchor,
                                              self.mouse)
+
+    def _draw_blast(self, centre) -> None:
+        """The tiles an airstrike will cover, so nobody bombs their own line."""
+        for tile in self._ring(centre, AIRSTRIKE_RADIUS):
+            friendly = self.view.unit_at(tile)
+            mine = friendly is not None and friendly["owner"] == self.my_pid
+            self.renderer.highlight(self.screen, tile,
+                                    UI_WARN if mine else UI_ACCENT)
+
+    def _ring(self, centre, radius: int) -> list:
+        board = self.renderer.board
+        out = []
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                tile = (centre[0] + dx, centre[1] + dy)
+                if board.map.inside(*tile):
+                    out.append(tile)
+        return out
 
     def _collect_board_tip(self) -> None:
         """Describe whatever the pointer is over, so nobody has to decode the
@@ -1270,6 +1388,19 @@ class App:
             lines.append(("Trains " + ", ".join(UNIT[c].name
                                                 for c in info.produces),
                           UI_TEXT, 14))
+        if info.heal:
+            lines.append((f"Heals {info.heal} hp a turn, within "
+                          f"{info.heal_radius} tile"
+                          f"{'s' if info.heal_radius != 1 else ''}", UI_GOOD, 14))
+            lines.append((f"{MEDIC_HEAL_COST} supply per point of health",
+                          UI_TEXT, 14))
+            lines.append(("Patients must be told to hold, and cannot shoot",
+                          UI_WARN, 14))
+        if info.airstrikes:
+            lines.append((f"One {AIRSTRIKE_COST}-supply airstrike a turn",
+                          UI_GOOD, 14))
+            lines.append(("Lands mid-turn and hits everyone underneath",
+                          UI_WARN, 14))
         if info.wall:
             lines.append(("Bruisers and Engineers break it fast", UI_WARN, 14))
         lines.append((info.blurb, UI_DIM, 13))
@@ -1343,6 +1474,33 @@ class App:
             self._button(rect, "", f"train:{code}", hidden=True, enabled=affordable)
             self._tips.append((rect, self._unit_tip(code)))
             y += 29
+        if btype.airstrikes:
+            queued = any(o["o"] == "airstrike" and o["bid"] == building["bid"]
+                         for o in self.queued)
+            affordable = (not queued
+                          and self._spent() + AIRSTRIKE_COST <= self.view.supply)
+            rect = pygame.Rect(x, y, PANEL_W - 16, 26)
+            ui.draw_panel(self.screen, rect,
+                          UI_PANEL_HI if affordable else shade(UI_PANEL, 0.8))
+            ui.draw_text(self.screen, "Call airstrike" if not queued
+                         else "Strike called", rect.x + 5, rect.y + 2, 15,
+                         UI_TEXT if affordable else UI_DIM)
+            ui.draw_text(self.screen, f"{AIRSTRIKE_COST}s", rect.right - 5,
+                         rect.y + 2, 13, UI_DIM, anchor="topright")
+            ui.draw_text(self.screen, "one a turn, anywhere on the map",
+                         rect.x + 5, rect.y + 14, 11, UI_DIM)
+            self._button(rect, "", "airstrike", hidden=True, enabled=affordable)
+            self._tips.append((rect, [
+                ("Airstrike", UI_ACCENT, 17),
+                (f"{AIRSTRIKE_COST} supply, one per Airfield per turn", UI_TEXT, 14),
+                ("Lands halfway through the turn, so aim where you think",
+                 UI_TEXT, 13),
+                ("they will be -- not where they are now.", UI_TEXT, 13),
+                ("Hits everything underneath. Your troops included.",
+                 UI_WARN, 14),
+            ]))
+            y += 30
+
         if building["code"] == "base":
             y = self._draw_research(panel, x, y + 4, building) + 4
             barracks = BUILDING["barracks"]
@@ -1385,6 +1543,7 @@ class App:
             ui.draw_text(self.screen, f"spd {unit_type.speed}  rng {unit_type.reach}  {beats}",
                          x, y + 14, 12, UI_DIM)
             y += 30
+        y = self._draw_promotions(x, y, units) if units else y
         y = max(y, panel.y + 120)
         ui.draw_text(self.screen, "right-click: march there", x, y, 13, UI_DIM)
         ui.draw_text(self.screen, "shift+right: advance, ready to fight",
@@ -1392,6 +1551,44 @@ class App:
         ui.draw_text(self.screen, "  -- but a quarter slower", x, y + 26, 12,
                      UI_WARN)
         ui.draw_text(self.screen, "tab: select whole army", x, y + 40, 13, UI_DIM)
+
+    def _draw_promotions(self, x, y, units) -> int:
+        """Ranks held by the selection, and the button to buy the next one."""
+        ranked = [u for u in units if u.get("rank")]
+        if ranked:
+            tally: dict[int, int] = {}
+            for unit in ranked:
+                tally[unit["rank"]] = tally.get(unit["rank"], 0) + 1
+            for rank, count in sorted(tally.items(), reverse=True):
+                ui.draw_text(self.screen, f"{count}x {rank_name(rank)}", x, y,
+                             14, UI_GOOD)
+                y += 15
+            y += 2
+        eligible = [u for u in units
+                    if u.get("blooded") and promotion_cost(u.get("rank", 0))]
+        if not eligible:
+            return y
+        price = min(promotion_cost(u.get("rank", 0)) for u in eligible)
+        affordable = self._spent() + price <= self.view.supply
+        rect = pygame.Rect(x, y, PANEL_W - 16, 24)
+        ui.draw_panel(self.screen, rect,
+                      UI_PANEL_HI if affordable else shade(UI_PANEL, 0.8))
+        ui.draw_text(self.screen, f"Promote ({len(eligible)})  [P]",
+                     rect.x + 5, rect.y + 4, 15,
+                     UI_TEXT if affordable else UI_DIM)
+        ui.draw_text(self.screen, f"from {price}s", rect.right - 5, rect.y + 4,
+                     13, UI_DIM, anchor="topright")
+        self._button(rect, "", "promote", hidden=True, enabled=affordable)
+        self._tips.append((rect, [
+            ("Promotion", UI_ACCENT, 17),
+            ("+1 attack and +4 health per rank, and a full heal.", UI_TEXT, 14),
+            ("A Lieutenant also lends +1 attack to everyone nearby.",
+             UI_GOOD, 14),
+            ("Only units that have fought since their last promotion.",
+             UI_TEXT, 13),
+            ("Costs rise steeply: 12, then 30, then 60.", UI_DIM, 13),
+        ]))
+        return y + 28
 
     def _draw_overview(self, panel, x, y) -> None:
         ui.draw_text(self.screen, "COMMANDERS", x, y, 15, UI_DIM)
