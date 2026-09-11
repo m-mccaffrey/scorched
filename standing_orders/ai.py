@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from .fog import VisionCache, team_vision
 from .grid import chebyshev, manhattan
-from .units import (HARVEST_RADIUS, UNIT, available_research,
+from .units import (ARMY_CAP_MAX, HARVEST_RADIUS, UNIT, available_research,
                     cost_of_building)
 
 @dataclass(frozen=True)
@@ -205,6 +205,24 @@ class BotBrain:
             budget -= price
             depots = depots + [None]           # counts toward the cap estimate
             break
+
+        # 1b. A depot purely for the ceiling. Node-side depots alone top a bot
+        #     out around 24 army however rich it gets, which is how bots ended
+        #     matches sitting on a thousand unspent supply. If we are capped,
+        #     the ceiling can still rise, and there is money doing nothing,
+        #     the answer is another depot -- anywhere safe will do, since this
+        #     one is bought for its supply_cap and not its reach.
+        if (SKILLS[self.skill].expands and idle_workers
+                and state.army_size(me.pid) >= state.army_cap_of(me.pid)
+                and state.army_cap_of(me.pid) < ARMY_CAP_MAX):
+            price = cost_of_building("depot", me.research)
+            if budget >= price + EXPAND_SURPLUS:
+                site = self._site_near(state, bases[0].tile, radius=4)
+                if site is not None:
+                    worker = idle_workers.pop(0)
+                    orders.append({"o": "build", "uid": worker.uid,
+                                   "code": "depot", "to": list(site)})
+                    budget -= price
 
         # 2. Barracks: the gate to the counter triangle -- but only once the
         #    economy is running. Opening with a Barracks instead of a depot

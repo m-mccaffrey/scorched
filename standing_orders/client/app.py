@@ -634,15 +634,18 @@ class App:
         if not self.selected:
             return
         board = self.renderer.board
-        blocked = {(u["x"], u["y"]) for u in self.view.units.values()}
-        blocked |= {(b["x"], b["y"]) for b in self.view.buildings.values()}
-        targets = self._formation(tile, len(self.selected), blocked)
+        # Only structures are planned around -- matching the server, which
+        # ignores units because they will all have moved by the time the plan
+        # runs. Formations still avoid stacking on occupied ground.
+        structures = {(b["x"], b["y"]) for b in self.view.buildings.values()}
+        occupied = structures | {(u["x"], u["y"]) for u in self.view.units.values()}
+        targets = self._formation(tile, len(self.selected), occupied)
         units = sorted(
             (self.view.units[uid] for uid in self.selected if uid in self.view.units),
             key=lambda u: abs(u["x"] - tile[0]) + abs(u["y"] - tile[1]))
         for unit, goal in zip(units, targets):
             path = find_path(board.map, (unit["x"], unit["y"]), goal,
-                             blocked - {(unit["x"], unit["y"]), goal})
+                             structures - {goal})
             self.unit_orders[unit["uid"]] = {
                 "o": "attack" if attack else "move", "uid": unit["uid"],
                 "to": list(goal), "path": path}

@@ -84,6 +84,20 @@ class OrderError(Exception):
 # Order application
 # ---------------------------------------------------------------------------
 
+def static_obstacles(occupancy: dict) -> set:
+    """Tiles worth planning around: structures, and nothing else.
+
+    Units are deliberately *not* obstacles at planning time. A plan is written
+    a whole turn before it runs, by which point everyone has moved, so routing
+    around where your own army happens to be standing buys nothing and sends
+    units on absurd detours around their own front line. Units still occupy
+    tiles when the turn actually resolves; a unit that finds its next step
+    taken simply routes around it then, when the obstruction is real.
+    """
+    return {tile for tile, (kind, _ident) in occupancy.items()
+            if kind == "building"}
+
+
 def path_toward(tilemap, start, goal, blocked) -> list:
     """Path to ``goal``, or failing that to the closest tile beside it.
 
@@ -171,7 +185,7 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
         goal = _tile(order.get("to"))
         if goal is None or not state.map.inside(*goal):
             raise OrderError("target off the map")
-        blocked = set(occupancy) - {unit.tile}
+        blocked = static_obstacles(occupancy) - {unit.tile}
         unit.stance = kind
         unit.goal = goal
         unit.job = None
@@ -230,7 +244,7 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
         unit.job = (code, target)
         unit.stance = "hold"
         unit.goal = target
-        blocked = set(occupancy) - {unit.tile}
+        blocked = static_obstacles(occupancy) - {unit.tile}
         path = path_toward(state.map, unit.tile, target, blocked)
         # Stop one tile short: the structure needs the site itself free.
         unit.path = path[:-1] if path else []
@@ -379,6 +393,8 @@ class Resolver:
         if unit.rerouted or unit.goal is None:
             return False
         unit.rerouted = True
+        # A reroute happens mid-turn against a real obstruction, so here the
+        # units standing in the way genuinely do count.
         blocked = set(self.occupancy) - {unit.tile}
         goal = unit.goal
         path = path_toward(self.state.map, unit.tile, goal, blocked)

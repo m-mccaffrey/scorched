@@ -242,18 +242,34 @@ nobody working it is outlined in red and marked with a `!`:
 | Sentry Tower | 8 | 2 turns | 40 | Shoots three tiles. Never moves |
 | Barricade | 2 | 1 turn | 30 | Blocks the way |
 
-**The army cap starts at 12 and grows by 4 per Supply Depot, to 24.** Engineers
+**The army cap starts at 12 and grows by 4 per Supply Depot, to 40.** Engineers
 count against it, so every worker is one fewer soldier — that tension is what
 makes the economy a decision rather than free money. And because depots raise
 the ceiling, an economy buys you a *bigger army*, not merely a faster-rebuilt
 one. Some cap is essential either way: without one, two even sides reinforce
 exactly as fast as they die and the match never ends.
 
+The ceiling sat at 24 until it was measured. It turned out not to be what ends
+a match — length and win rates came out identical at 24, 32, 40 and 64 — it was
+just where a late game stopped having decisions in it, with both sides fielding
+the same maximum army and a thousand supply banked and nowhere to put it. What
+still argues for a ceiling is the clock: turn resolution grows with the units on
+the board, and 40 a side is about where a Pi 400 resolves a turn without a
+visible pause.
+
 **Barricades** are answered by Bruisers and Engineers, who tear one down in
 about two turns. Everything else does quarter damage — roughly ten turns — so a
 wall is never an absolute full stop, but bringing a rifle to a wall is
 obviously the wrong answer. Units that meet an obstacle route around it rather
 than stopping dead.
+
+**Routing** plans around terrain and structures only — never around other
+units. Planning around units looked more intelligent and played far worse: a
+soldier ordered past his own firing line would set off on a wide arc around it
+to reach a tile two steps away, because the crowd he was routing around had
+walked off by the time he got there. Bodies in the way are handled where they
+actually are a problem, mid-turn: a unit that finds a tile occupied at the
+moment it steps reroutes then, with the board as it really is.
 
 **Research** happens at the Command Post, one project at a time, and applies to
 your whole force permanently: Weapons I/II (+1 attack each), Armour I/II (+4
@@ -322,7 +338,9 @@ restraint and discipline rather than by information.
 Skill covers the whole game, not just fighting. A Novice runs one Engineer, one
 production line, never researches and never expands; a Veteran masses an army
 before committing, counter-picks its production, comes home when its base is
-threatened, and builds forward depots to grow its cap. When difficulty varied
+threatened, and builds forward depots to grow its cap — both the ones that put
+a node in range and, once it is capped with money to spare, ones bought purely
+for the ceiling. When difficulty varied
 only in how a bot *fought*, the economy decided matches instead and every level
 converged on a coin flip.
 

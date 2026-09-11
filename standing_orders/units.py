@@ -31,9 +31,20 @@ HARVEST_RADIUS = 5
 #: side could ever field enough to crack a Command Post. Matches went from a
 #: 32-turn median to unresolved. The base is now sized for an army *including*
 #: its labour.
+#:
+#: The ceiling used to sit at 24, three Depots' worth, and that turned out to
+#: be where a real game stops being about decisions: by the time both sides
+#: have an economy running, every match is two full armies of exactly the same
+#: size trading into each other with a thousand supply banked and nowhere to
+#: put it. Raising it to 40 costs nothing in pacing -- measured across five
+#: matchups, match length and win rates were identical at 24, 32, 40 and 64 --
+#: because what actually ends a match is the economy, not the ceiling. It is
+#: still a ceiling, though: resolution cost grows with the square of the units
+#: on the board, and 40 a side is about where a Pi 400 can still resolve a turn
+#: without a visible pause.
 ARMY_CAP_BASE = 12
 DEPOT_CAP = 4
-ARMY_CAP_MAX = 24
+ARMY_CAP_MAX = 40
 
 #: Units that can properly demolish a barricade. Everyone else can chip at it,
 #: at a quarter rate -- enough that a wall is never an absolute full stop, far
