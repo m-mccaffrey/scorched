@@ -33,13 +33,27 @@ from ..units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, BUILDING, BUILDINGS,
                      RESEARCH_BY_CODE, UNIT, available_research,
                      cost_of_building, catalogue, promotion_cost, rank_name)
 from .audio import OrdersSfx
-from .render import (HUD_H, PANEL_W, SCREEN_H, SCREEN_W, TOP_H, Renderer,
+from .render import (HUD_H, PANEL_W, SCREEN_H, SCREEN_W, TOP_H, Board,
+                     Renderer,
                      draw_tooltip)
 from .replay import ReplayPlayer
 from .view import WorldView
 
 FPS = 60
 SKILLS = ("novice", "moderate", "veteran", "cyborg")
+
+#: Camera scroll speed, in board pixels a second. A whole screen takes a little
+#: under a second to cross, which is quick enough not to nag and slow enough
+#: that you can follow where you have got to.
+SCROLL_SPEED = 520
+
+#: How close to the edge of the board the pointer has to be to pan.
+EDGE_PAN = 12
+
+#: Height reserved at the foot of the command panel for the minimap. The
+#: tightest panel state (a Command Post, with production and research) draws to
+#: within 75px of the bottom, so this has to fit inside that and leave a margin.
+MINIMAP_BAND = 68
 
 
 class App:
@@ -146,6 +160,8 @@ class App:
                 self._finish_replay()
         if self.time_left > 0:
             self.time_left = max(0.0, self.time_left - dt)
+        if self.mode == "game":
+            self._scroll_camera(dt)
 
     def _finish_replay(self) -> None:
         payload_state = self.replay.final_state
@@ -563,6 +579,87 @@ class App:
             self._queue_promotions()
         elif key == pygame.K_TAB:
             self._select_all_units()
+        elif key == pygame.K_HOME:
+            self._look_at_home()
+
+    # -- camera ------------------------------------------------------------
+    def _scroll_camera(self, dt: float) -> None:
+        """Arrow keys, WASD, and the screen edge.
+
+        Held keys rather than key events: a camera that steps once per repeat
+        is the same jitter the artillery aim had, and it reads as broken.
+        """
+        board = self.renderer.board
+        if board is None or not board.scrolls:
+            return
+        keys = pygame.key.get_pressed()
+        dx = dy = 0
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            dx -= 1
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            dx += 1
+        if keys[pygame.K_UP] or keys[pygame.K_w]:
+            dy -= 1
+        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+            dy += 1
+        # Nudging the edge of the board with the pointer scrolls too, which is
+        # what a hand already on the mouse expects.
+        if Board.VIEW.collidepoint(self.mouse):
+            if self.mouse[0] - Board.VIEW.x < EDGE_PAN:
+                dx -= 1
+            elif Board.VIEW.right - self.mouse[0] < EDGE_PAN:
+                dx += 1
+            if self.mouse[1] - Board.VIEW.y < EDGE_PAN:
+                dy -= 1
+            elif Board.VIEW.bottom - self.mouse[1] < EDGE_PAN:
+                dy += 1
+        if dx or dy:
+            step = int(SCROLL_SPEED * dt) or 1
+            board.scroll_by(dx * step, dy * step)
+
+    def _look_at_home(self) -> None:
+        """Snap the camera to your Command Post."""
+        board = self.renderer.board
+        base = next((b for b in self.view.buildings.values()
+                     if b["owner"] == self.my_pid and b["code"] == "base"), None)
+        if board is not None and base is not None:
+            board.centre_on((base["x"], base["y"]))
+
+    def _minimap_rect(self) -> pygame.Rect | None:
+        """Where the minimap sits: a reserved band at the foot of the panel.
+
+        Reserved in every panel state, not just the overview. You almost always
+        have something selected while giving orders, which is precisely when
+        knowing where the fighting is matters, so a minimap that only appears
+        when nothing is selected would be missing whenever it was wanted.
+        """
+        board = self.renderer.board
+        if board is None:
+            return None
+        panel = pygame.Rect(SCREEN_W - PANEL_W, TOP_H, PANEL_W,
+                            SCREEN_H - TOP_H - HUD_H)
+        band = pygame.Rect(panel.x + 6, panel.bottom - MINIMAP_BAND,
+                           panel.width - 12, MINIMAP_BAND - 6)
+        # Fit the band, preserving the map's shape. Snapping to whole pixels a
+        # tile would waste most of the band on a wide map -- a 64x44 map would
+        # take one pixel a tile and fill 64 of the 176 pixels available -- and
+        # this is a picture to glance at, not a grid to read.
+        scale = min(band.width / board.map.width, band.height / board.map.height)
+        width = max(1, int(board.map.width * scale))
+        height = max(1, int(board.map.height * scale))
+        return pygame.Rect(band.x + (band.width - width) // 2,
+                           band.bottom - height, width, height)
+
+    def _minimap_click(self, pos) -> bool:
+        """Click or drag the minimap to move the camera. True if it was ours."""
+        rect = self._minimap_rect()
+        board = self.renderer.board
+        if rect is None or board is None or not rect.collidepoint(pos):
+            return False
+        tx = int((pos[0] - rect.x) / rect.width * board.map.width)
+        ty = int((pos[1] - rect.y) / rect.height * board.map.height)
+        board.centre_on((tx, ty))
+        return True
 
     def _select_all_units(self) -> None:
         self.selected = {u["uid"] for u in self.view.mine(self.my_pid)}
@@ -575,6 +672,8 @@ class App:
         tile = board.to_tile(event.pos)
 
         if event.button == 1:
+            if self._minimap_click(event.pos):
+                return
             if tile is not None and self.aiming is not None:
                 self._call_airstrike(tile)
                 return
@@ -1088,6 +1187,12 @@ class App:
             ui.draw_text(self.screen, "Waiting for the match to start...",
                          SCREEN_W // 2, SCREEN_H // 2, 20, UI_DIM, anchor="center")
             return
+        # Everything that lives in world coordinates is clipped to the board
+        # viewport. On a scrolling map a unit near the edge, a tracer, or a
+        # drifting damage number is otherwise perfectly happy to draw itself
+        # across the command panel.
+        self.screen.fill(UI_BG)
+        self.screen.set_clip(Board.VIEW)
         self.renderer.draw_terrain(self.screen)
         self.renderer.draw_nodes(self.screen, self.view.node_owner, self.colors)
         self._draw_entities()
@@ -1100,6 +1205,7 @@ class App:
             self.replay.draw_effects(self.screen)
         if self.phase == "orders" and self.replay is None:
             self._draw_orders_overlay()
+        self.screen.set_clip(None)
         self._draw_top()
         self._collect_board_tip()
         self._draw_panel()
@@ -1311,14 +1417,36 @@ class App:
                          "Skip (Space)", "skip", 15)
             return
 
+        # The minimap band is reserved first, so no panel state can draw into
+        # it. Everything above is given the shortened panel to work with.
+        content = pygame.Rect(panel.x, panel.y, panel.width,
+                              panel.height - MINIMAP_BAND)
         if self.selected_building is not None:
-            self._draw_production(panel, x, y)
+            self._draw_production(content, x, y)
         elif self._selected_workers():
-            self._draw_engineering(panel, x, y)
+            self._draw_engineering(content, x, y)
         elif self.selected:
-            self._draw_selection(panel, x, y)
+            self._draw_selection(content, x, y)
         else:
-            self._draw_overview(panel, x, y)
+            self._draw_overview(content, x, y)
+        self._draw_minimap()
+
+    def _draw_minimap(self) -> None:
+        rect = self._minimap_rect()
+        if rect is None:
+            return
+        self.renderer.draw_minimap(self.screen, rect, self.view, self.colors,
+                                   self.my_pid)
+        hint = ("click to look there" if self.renderer.board.scrolls
+                else "whole map in view")
+        ui.draw_text(self.screen, hint, rect.centerx, rect.top - 11, 11,
+                     UI_DIM, anchor="midtop")
+        self._tips.append((rect, [
+            ("Minimap", UI_ACCENT, 17),
+            ("Click anywhere to move the camera there.", UI_TEXT, 14),
+            ("Arrows or WASD scroll; Home returns to your", UI_TEXT, 13),
+            ("Command Post. The box is what you can see.", UI_TEXT, 13),
+        ]))
 
     def _selected_workers(self) -> list:
         return [self.view.units[uid] for uid in sorted(self.selected)

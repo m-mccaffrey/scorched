@@ -308,6 +308,27 @@ Engineer) and Engineering (structures finish a turn sooner, Barricades cost 1).
 Its real job is to give a healthy economy somewhere to spend once quantity is
 capped.
 
+**Maps come in two sizes.** The three original maps fit the screen entirely and
+never scroll. *Long Valley* is 64x44 — four times the area — and the view
+scrolls: arrows or WASD, the pointer at the screen edge, Home to snap back to
+your Command Post, or a click anywhere on the minimap at the foot of the
+command panel.
+
+The size changes what the game *is*, and fog is why. At 32 tiles across, with
+units seeing 4–6, you can see most of the board most of the time. At 64 you
+cannot, so Scouts finally matter, an airstrike into the dark is a real gamble,
+and "where are they?" becomes a question with no easy answer. Matches run a
+median of 93 turns against 63–127 on the small maps — longer ground to cover,
+but more nodes to fight over, so it is not slower, only bigger.
+
+A map can declare `!pace N` to move every army N times as fast. The large map
+does not use it: the guess going in was that four times the area would mean
+twice the walking and twice the match, and measuring said otherwise — pace 1
+gives 93 turns, pace 2 gives 38. Match length turns out to be set by how
+quickly somebody gets a decisive economy, not by how far anyone walks, and more
+nodes settle that sooner. The knob is there for a map that does turn out to
+drag.
+
 **Fog of war**, shared with your team. Ground you have scouted stays drawn but
 dimmed; ground you have never seen is black. Enemies you have seen and lost
 track of linger as ghosts at their last known position.
@@ -486,7 +507,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 261 tests
+python3 -m pytest          # 280 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

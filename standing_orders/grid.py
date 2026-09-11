@@ -32,8 +32,15 @@ SPAWNS = "12345678"
 COST_OPEN = 96
 COST_FOREST = 192
 
-MAX_W = 32
-MAX_H = 24
+#: The largest map the game will load.
+#:
+#: This used to be 32x24, the exact size the board viewport can show, and the
+#: error said so: "exceeds what the screen can show without scrolling". The
+#: client now scrolls, so the limit is about play and memory rather than
+#: pixels. 96x64 is four times the linear span of the old maps and sixteen
+#: times the area, which is past anything worth authoring by hand.
+MAX_W = 96
+MAX_H = 64
 
 _PASSABLE = set(OPEN + FOREST + NODE + SPAWNS)
 _BLOCKS_SIGHT = {ROCK, FOREST}
@@ -63,6 +70,32 @@ class MapError(Exception):
     """A map file that cannot be used as written."""
 
 
+def _pace(raw, name: str) -> int:
+    """Read a ``!pace`` header, refusing anything that is not a whole step."""
+    if raw is None or not str(raw).strip():
+        return DEFAULT_PACE
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        raise MapError(f"{name}: pace must be a whole number, got '{raw}'")
+    if not 1 <= value <= MAX_PACE:
+        raise MapError(f"{name}: pace must be 1..{MAX_PACE}, got {value}")
+    return value
+
+
+#: How much faster armies move, per map. A big map with ordinary movement is
+#: not a strategic map, it is the same match with more walking in it: four
+#: times the area is twice the distance, so every march takes twice as long
+#: and the median match doubles. A map declares its own tempo instead, so the
+#: extra ground buys fog and room to manoeuvre rather than waiting.
+#:
+#: Whole numbers only. Movement arithmetic is integral everywhere so that a Pi
+#: and a desktop cannot disagree about where a unit ended up, and a fractional
+#: multiplier would put a stop to that.
+DEFAULT_PACE = 1
+MAX_PACE = 4
+
+
 @dataclass(frozen=True)
 class MapInfo:
     name: str
@@ -70,6 +103,7 @@ class MapInfo:
     players: int
     teams: bool
     notes: str
+    pace: int = DEFAULT_PACE
 
 
 class TileMap:
@@ -184,6 +218,7 @@ class TileMap:
             players=int(meta.get("players", len(spawns))),
             teams=meta.get("teams", "").lower() in ("1", "true", "yes"),
             notes=meta.get("notes", ""),
+            pace=_pace(meta.get("pace"), name),
         )
         return cls(rows, spawns, nodes, info)
 
@@ -195,11 +230,28 @@ class TileMap:
     def to_wire(self) -> dict:
         return {"tiles": self.tiles, "name": self.info.name,
                 "players": self.info.players, "teams": self.info.teams,
-                "notes": self.info.notes, "author": self.info.author}
+                "notes": self.info.notes, "author": self.info.author,
+                "pace": self.info.pace}
 
     @classmethod
     def from_wire(cls, data: dict) -> "TileMap":
-        return cls.parse("\n".join(data["tiles"]), data.get("name", "map"))
+        """Rebuild a map a client was sent.
+
+        The wire carries tiles and metadata separately, and only the tiles go
+        through the parser -- so every ``!`` header has to be reapplied here or
+        it is silently lost. Pace found this the hard way: the server ran a map
+        at double speed and every client believed it was at single.
+        """
+        tilemap = cls.parse("\n".join(data["tiles"]), data.get("name", "map"))
+        tilemap.info = MapInfo(
+            name=data.get("name", tilemap.info.name),
+            author=data.get("author", tilemap.info.author),
+            players=int(data.get("players", tilemap.info.players)),
+            teams=bool(data.get("teams", tilemap.info.teams)),
+            notes=data.get("notes", tilemap.info.notes),
+            pace=_pace(data.get("pace"), data.get("name", "map")),
+        )
+        return tilemap
 
 
 # ---------------------------------------------------------------------------

@@ -539,7 +539,7 @@ class Resolver:
             if unit.stance == "attack" and self._find_target(unit) is not None:
                 continue                     # engaged: stop and fight
             pace = ADVANCE_PACE if unit.stance == "attack" else MOVE_PACE
-            unit.move_points += unit.type.speed * pace
+            unit.move_points += unit.type.speed * pace * self.state.map.info.pace
             nxt = unit.path[0]
             cost = self.state.map.cost(*nxt)
             if unit.move_points < cost:

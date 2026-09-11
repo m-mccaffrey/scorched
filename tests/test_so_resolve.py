@@ -953,3 +953,46 @@ def test_being_bombed_does_not_earn_a_promotion():
     resolve_turn(state, {0: [{"o": "airstrike", "bid": field.bid,
                               "to": [10, 5]}]})
     assert victim.alive and not victim.blooded
+
+
+# -- map pace --------------------------------------------------------------
+
+def paced_arena(pace, width=40, height=10):
+    rows = ["." * width for _ in range(height)]
+    rows[0] = "1" + rows[0][1:]
+    rows[-1] = rows[-1][:-1] + "2"
+    header = f"!players 2\n!pace {pace}\n"
+    state = MatchState(TileMap.parse(header + "\n".join(rows)))
+    for pid in range(2):
+        state.players[pid] = Player(pid=pid, name=f"P{pid}", team=pid,
+                                    color=pid, supply=30)
+        state.add_building(pid, "base", 1 + pid * 2, height - 1)
+    return state
+
+
+def test_pace_carries_an_army_proportionally_further():
+    """Four times the ground with ordinary movement is the same match with
+    twice the walking in it. A map sets its own tempo instead."""
+    travelled = {}
+    for pace in (1, 2, 3):
+        state = paced_arena(pace)
+        scout = state.add_unit(0, "scout", 2, 5)
+        resolve_turn(state, {0: [{"o": "move", "uid": scout.uid, "to": [35, 5]}]})
+        travelled[pace] = scout.x - 2
+    assert travelled[2] == travelled[1] * 2
+    assert travelled[3] == travelled[1] * 3
+
+
+def test_pace_leaves_the_movement_arithmetic_whole():
+    """Integral everywhere, or a Pi and a desktop disagree about where a unit
+    stopped. Advancing is seven eighths of marching, and must stay exact."""
+    for pace in (1, 2, 3, 4):
+        marched, advanced = [], []
+        for stance, out in (("move", marched), ("attack", advanced)):
+            state = paced_arena(pace)
+            unit = state.add_unit(0, "trooper", 2, 5)
+            resolve_turn(state, {0: [{"o": stance, "uid": unit.uid,
+                                      "to": [35, 5]}]})
+            out.append(unit.x - 2)
+        assert marched[0] * ADVANCE_PACE // MOVE_PACE == advanced[0], \
+            f"pace {pace}: advancing is not exactly 7/8 of marching"

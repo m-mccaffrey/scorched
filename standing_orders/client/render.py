@@ -47,22 +47,85 @@ C_TUFT_DRY = (86, 92, 60)
 C_TRUNK = (40, 34, 26)
 C_ROCK_FACE = (86, 84, 92)
 
+#: Terrain as the minimap sees it: one flat colour a tile, no detail at all.
+MINIMAP_TERRAIN = {
+    ROCK: C_ROCK,
+    WATER: C_WATER,
+    FOREST: C_FOREST,
+}
+
 #: Explored-but-unseen ground is dimmed; never-explored ground is blacked out.
 FOG_SEEN_ALPHA = 130
 FOG_UNKNOWN_ALPHA = 246
 
 
 class Board:
-    """Maps tile coordinates to screen pixels and back."""
+    """Maps tile coordinates to screen pixels and back, through a camera.
+
+    Maps used to be capped at exactly the size of the viewport, so there was no
+    camera at all and ``ox``/``oy`` were constants that centred a small map.
+    They are now derived from a scroll position, which is why every caller --
+    units, order paths, highlights, tooltips, tracers, drifting numbers -- kept
+    working untouched: they all ask the board where a tile is, and the board
+    now answers with the camera in mind.
+
+    A map that fits on screen still centres and never scrolls, so the three
+    original maps draw exactly as they always did.
+    """
+
+    #: Screen rectangle the battlefield is drawn into.
+    VIEW = pygame.Rect(0, TOP_H, BOARD_W, BOARD_H)
 
     def __init__(self, tilemap) -> None:
         self.map = tilemap
         self.pixel_w = tilemap.width * TILE
         self.pixel_h = tilemap.height * TILE
-        # Centre small maps in the board area rather than jamming them into
-        # the corner.
-        self.ox = max(0, (BOARD_W - self.pixel_w) // 2)
-        self.oy = TOP_H + max(0, (BOARD_H - self.pixel_h) // 2)
+        # Centre a map smaller than the viewport rather than jamming it into
+        # the corner; a larger one starts at the top left and scrolls.
+        self.pad_x = max(0, (BOARD_W - self.pixel_w) // 2)
+        self.pad_y = max(0, (BOARD_H - self.pixel_h) // 2)
+        self.cam_x = 0
+        self.cam_y = 0
+
+    # -- camera ------------------------------------------------------------
+    @property
+    def scrolls(self) -> bool:
+        return self.pixel_w > BOARD_W or self.pixel_h > BOARD_H
+
+    @property
+    def max_cam(self) -> tuple[int, int]:
+        return (max(0, self.pixel_w - BOARD_W), max(0, self.pixel_h - BOARD_H))
+
+    @property
+    def ox(self) -> int:
+        return self.pad_x - self.cam_x
+
+    @property
+    def oy(self) -> int:
+        return TOP_H + self.pad_y - self.cam_y
+
+    def scroll_by(self, dx: int, dy: int) -> None:
+        limit_x, limit_y = self.max_cam
+        self.cam_x = min(limit_x, max(0, self.cam_x + int(dx)))
+        self.cam_y = min(limit_y, max(0, self.cam_y + int(dy)))
+
+    def centre_on(self, tile) -> None:
+        """Put a tile in the middle of the viewport, as far as the edges allow."""
+        self.cam_x = self.cam_y = 0
+        self.scroll_by(tile[0] * TILE + TILE // 2 - BOARD_W // 2,
+                       tile[1] * TILE + TILE // 2 - BOARD_H // 2)
+
+    def camera_tiles(self) -> pygame.Rect:
+        """The tile rectangle currently on screen, as a minimap needs it."""
+        return pygame.Rect(self.cam_x // TILE, self.cam_y // TILE,
+                           min(self.map.width, BOARD_W // TILE + 1),
+                           min(self.map.height, BOARD_H // TILE + 1))
+
+    def on_screen(self, tile) -> bool:
+        """Is this tile worth drawing? Off-camera work is wasted on a Pi."""
+        x, y = self.to_screen(tile)
+        return (-TILE < x - self.VIEW.x < BOARD_W
+                and -TILE < y - self.VIEW.y < BOARD_H)
 
     def to_screen(self, tile) -> tuple[int, int]:
         return (self.ox + tile[0] * TILE, self.oy + tile[1] * TILE)
@@ -72,6 +135,8 @@ class Board:
         return (x + TILE // 2, y + TILE // 2)
 
     def to_tile(self, pos) -> tuple[int, int] | None:
+        if not self.VIEW.collidepoint(pos):
+            return None        # a click on the panel is not a click on a tile
         tx = (pos[0] - self.ox) // TILE
         ty = (pos[1] - self.oy) // TILE
         if 0 <= tx < self.map.width and 0 <= ty < self.map.height:
@@ -89,6 +154,7 @@ class Renderer:
         self.terrain = pygame.Surface((1, 1))
         self.fog = pygame.Surface((1, 1), pygame.SRCALPHA)
         self._fog_key = None
+        self._minimap: pygame.Surface | None = None
         self.sprites = SpriteBank()
 
     # -- setup -------------------------------------------------------------
@@ -101,6 +167,7 @@ class Renderer:
         self.fog = pygame.Surface((self.board.pixel_w, self.board.pixel_h),
                                   pygame.SRCALPHA)
         self._fog_key = None
+        self._minimap = None
 
     def _paint_terrain(self) -> None:
         """Composite the whole board once.
@@ -204,17 +271,107 @@ class Renderer:
                 self.fog.fill((6, 8, 14, alpha), (x * TILE, y * TILE, TILE, TILE))
 
     # -- world -------------------------------------------------------------
+    # -- minimap -----------------------------------------------------------
+    def minimap_base(self) -> pygame.Surface:
+        """A tiny picture of the terrain, built once and kept.
+
+        One pixel a tile at the smallest scale, so the whole thing is a few
+        thousand pixels: cheap to build, free to blit, and rebuilt only when
+        the match changes map.
+        """
+        if self._minimap is None:
+            tilemap = self.board.map
+            surface = pygame.Surface((tilemap.width, tilemap.height)).convert()
+            for y in range(tilemap.height):
+                for x in range(tilemap.width):
+                    char = tilemap.at(x, y)
+                    surface.set_at((x, y), MINIMAP_TERRAIN.get(char, C_OPEN))
+            self._minimap = surface
+        return self._minimap
+
+    def draw_minimap(self, dest: pygame.Surface, rect: pygame.Rect,
+                     view, colors: dict, my_pid: int) -> None:
+        """The whole map at a glance: terrain, fog, everyone, and the camera.
+
+        Deliberately not a second battlefield -- a unit is one dot and there is
+        no detail to read. Its job is "where is my army, where is the fighting,
+        and what am I looking at", which is exactly what a scrolling map takes
+        away.
+        """
+        board = self.board
+        tilemap = board.map
+        sx = rect.width / tilemap.width
+        sy = rect.height / tilemap.height
+
+        def at(tx, ty):
+            return (rect.x + int(tx * sx), rect.y + int(ty * sy))
+
+        pygame.draw.rect(dest, UI_PANEL_LO, rect.inflate(4, 4))
+        pygame.draw.rect(dest, UI_PANEL_HI, rect.inflate(4, 4), 1)
+        dest.blit(pygame.transform.scale(self.minimap_base(), rect.size),
+                  rect.topleft)
+
+        # Ground never scouted is blacked out. Ground seen and since lost is
+        # left as it is -- at this size a second shade of dim is noise rather
+        # than information.
+        explored = view.explored
+        step_x, step_y = max(1, int(sx) + 1), max(1, int(sy) + 1)
+        if explored:
+            for y in range(tilemap.height):
+                for x in range(tilemap.width):
+                    if (x, y) not in explored:
+                        dest.fill((8, 10, 16), (*at(x, y), step_x, step_y))
+
+        for tile in tilemap.nodes:
+            if tile not in explored:
+                continue
+            owner = view.node_owner.get(tile)
+            colour = C_NODE if owner is None else team_color(colors.get(owner, 0))
+            dest.fill(colour, (*at(*tile), step_x, step_y))
+
+        blob = max(2, step_x)
+        for building in view.buildings.values():
+            x, y = at(building["x"], building["y"])
+            dest.fill(team_color(colors.get(building["owner"], 0)),
+                      (x - 1, y - 1, blob + 2, blob + 2))
+        for unit in view.units.values():
+            dest.fill(team_color(colors.get(unit["owner"], 0)),
+                      (*at(unit["x"], unit["y"]), blob, blob))
+
+        if board.scrolls:
+            window = board.camera_tiles()
+            corner = at(window.x, window.y)
+            frame = pygame.Rect(corner[0], corner[1],
+                                max(3, int(window.width * sx)),
+                                max(3, int(window.height * sy)))
+            pygame.draw.rect(dest, UI_ACCENT, frame.clip(rect), 1)
+
+    def _camera_blit(self, dest: pygame.Surface, source: pygame.Surface) -> None:
+        """Blit only the part of a board-sized surface the camera can see.
+
+        On the largest maps the terrain is 896x588 and the viewport is 448x340,
+        so blitting the whole thing would push four times the pixels needed
+        every frame. That is exactly the sort of waste a Pi 400 notices.
+        """
+        board = self.board
+        window = pygame.Rect(board.cam_x, board.cam_y, BOARD_W, BOARD_H)
+        window = window.clip(pygame.Rect(0, 0, board.pixel_w, board.pixel_h))
+        if window.width and window.height:
+            dest.blit(source, (board.ox + window.x, board.oy + window.y), window)
+
     def draw_terrain(self, dest: pygame.Surface) -> None:
         dest.fill(UI_BG)
-        dest.blit(self.terrain, (self.board.ox, self.board.oy))
+        self._camera_blit(dest, self.terrain)
 
     def draw_fog(self, dest: pygame.Surface) -> None:
-        dest.blit(self.fog, (self.board.ox, self.board.oy))
+        self._camera_blit(dest, self.fog)
 
     def draw_nodes(self, dest: pygame.Surface, node_owner: dict,
                    colors: dict) -> None:
         """Supply crates on each node, painted in its holder's colours."""
         for tile in self.board.map.nodes:
+            if not self.board.on_screen(tile):
+                continue
             owner = node_owner.get(tile)
             colour = C_NODE if owner is None else team_color(colors.get(owner, 0))
             sprite = self.sprites.node(colour)

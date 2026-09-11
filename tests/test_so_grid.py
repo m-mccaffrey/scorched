@@ -126,3 +126,49 @@ def test_shipped_maps_declare_enough_spawns():
         if m.info.teams:
             # 2v2 pairs spawns 1&3 against 2&4, so a team map needs all four.
             assert len(m.spawns) >= 4
+
+
+def test_a_map_can_declare_its_own_pace():
+    from standing_orders.grid import DEFAULT_PACE, MAX_PACE
+    assert TileMap.parse("1..\n..2\n").info.pace == DEFAULT_PACE
+    assert TileMap.parse("!pace 3\n1..\n..2\n").info.pace == 3
+    for bad in ("0", str(MAX_PACE + 1), "two", "1.5"):
+        with pytest.raises(MapError):
+            TileMap.parse(f"!pace {bad}\n1..\n..2\n")
+
+
+def test_pace_survives_the_wire():
+    """Clients rebuild the map from to_wire, and movement depends on pace."""
+    original = TileMap.parse("!pace 2\n1..\n..2\n")
+    assert TileMap.from_wire(original.to_wire()).info.pace == 2
+
+
+def test_maps_may_now_be_larger_than_the_screen():
+    """The old limit was the viewport; the client scrolls now."""
+    from standing_orders.grid import MAX_W, MAX_H
+    assert MAX_W > 32 and MAX_H > 24
+    rows = ["." * 64 for _ in range(44)]
+    rows[0] = "1" + rows[0][1:]
+    rows[-1] = rows[-1][:-1] + "2"
+    wide = TileMap.parse("\n".join(rows))
+    assert (wide.width, wide.height) == (64, 44)
+    with pytest.raises(MapError):
+        TileMap.parse("\n".join(["." * (MAX_W + 1)] * 3))
+
+
+def test_every_shipped_map_is_fully_connected():
+    """A quarter of the map nobody can walk to is a broken map, and it is far
+    easier to author one by accident at 64x44 than at 32x21."""
+    from standing_orders.grid import find_path
+
+    for name in available_maps():
+        tilemap = load_map(name)
+        spawns = sorted(tilemap.spawns.items())
+        first = spawns[0][1]
+        for slot, tile in spawns[1:]:
+            assert find_path(tilemap, first, tile, set()), \
+                f"{name}: spawn {slot} is cut off"
+        for node in tilemap.nodes:
+            assert tilemap.passable(*node), f"{name}: node {node} is unwalkable"
+            assert find_path(tilemap, first, node, set()), \
+                f"{name}: node {node} is unreachable"

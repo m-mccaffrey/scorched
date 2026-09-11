@@ -210,3 +210,73 @@ def test_an_airstrike_needs_an_airfield_and_is_costed(app):
     app.queued.clear()
     app.view.buildings.pop(9901, None)
     app.selected_building = None
+
+
+def test_a_map_that_fits_the_screen_never_scrolls(app):
+    """The three original maps must draw exactly as they always did."""
+    from standing_orders.client.render import Board
+    from standing_orders.game import load_map
+
+    small = Board(load_map("duel"))
+    assert not small.scrolls
+    assert small.max_cam == (0, 0)
+    before = (small.ox, small.oy)
+    small.scroll_by(500, 500)
+    assert (small.ox, small.oy) == before, "a fitting map cannot be scrolled"
+
+
+def test_the_camera_stays_inside_a_large_map(app):
+    from standing_orders.client.render import BOARD_H, BOARD_W, Board
+    from standing_orders.game import load_map
+
+    big = Board(load_map("valley"))
+    assert big.scrolls
+    big.scroll_by(-9999, -9999)
+    assert (big.cam_x, big.cam_y) == (0, 0)
+    big.scroll_by(9999, 9999)
+    assert (big.cam_x, big.cam_y) == big.max_cam
+    # At the far corner the last tile of the map is still on screen.
+    assert big.cam_x + BOARD_W >= big.pixel_w
+    assert big.cam_y + BOARD_H >= big.pixel_h
+    big.centre_on((32, 22))
+    assert big.on_screen((32, 22))
+    assert not big.on_screen((0, 0))
+
+
+def test_a_click_on_the_panel_is_not_a_click_on_a_tile(app):
+    """With a camera, panel coordinates otherwise map onto real tiles."""
+    from standing_orders.client.render import SCREEN_W, Board
+    from standing_orders.game import load_map
+
+    big = Board(load_map("valley"))
+    big.centre_on((40, 30))
+    assert big.to_tile((SCREEN_W - 40, 200)) is None, "that is the command panel"
+    assert big.to_tile((SCREEN_W // 4, 100)) is not None
+
+
+def test_the_minimap_moves_the_camera_and_ignores_clicks_elsewhere(app):
+    if app.renderer.board is None:
+        pytest.skip("no live match")
+    rect = app._minimap_rect()
+    assert rect is not None
+    assert not app._minimap_click((10, 10)), "a click on the board is not ours"
+    assert app._minimap_click(rect.center)
+
+
+def test_the_minimap_band_is_reserved_in_every_panel_state(app):
+    """It is wanted most while something is selected, which is most of the
+    time, so it cannot live only in the overview."""
+    if not app.view.buildings:
+        pytest.skip("no live match")
+    rect = app._minimap_rect()
+    mine = app.view.mine(app.my_pid)
+    base = next(b for b in app.view.buildings.values()
+                if b["owner"] == app.my_pid and b["code"] == "base")
+    states = [(set(), None), ({u["uid"] for u in mine}, None),
+              (set(), base["bid"])]
+    for selected, building in states:
+        app.selected, app.selected_building = set(selected), building
+        app._draw()
+        assert app._minimap_rect() == rect, "the minimap moved between states"
+    app.selected.clear()
+    app.selected_building = None
