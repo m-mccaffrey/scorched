@@ -440,3 +440,26 @@ def test_every_skill_files_diplomatic_orders_the_rules_accept():
                    if any(word in r for word in
                           ("offered", "already", "no such commander", "holds for"))]
             assert not bad, f"{skill}: {bad}"
+
+
+def test_a_long_war_starts_looking_for_terms():
+    """A web of half-signed truces can reach a state that is neither winnable
+    nor endable: two commanders grinding a third they cannot finish, nobody
+    losing badly enough to sue, and the one who could be offered terms a
+    Novice who accepts anything but never asks. Five matches in six ran to the
+    turn limit. Wars end."""
+    from standing_orders.ai import WAR_WEARY
+    import random as _random
+
+    match = started(4, teams=True)
+    state = match.state
+    brain = BotBrain("veteran", _random.Random(1))
+
+    state.turn = WAR_WEARY - 1
+    early = brain._diplomacy(match, state.players[0])
+    state.turn = WAR_WEARY
+    weary = brain._diplomacy(match, state.players[0])
+
+    offers = [o for o in weary if o["o"] == "propose"]
+    assert offers, "a bot in a long war never asks for terms"
+    assert len(offers) > len([o for o in early if o["o"] == "propose"])

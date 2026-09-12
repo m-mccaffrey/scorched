@@ -90,6 +90,17 @@ BETRAY_MARGIN = 1.6
 #: mean something, and a first-turn betrayal just reads as a bug.
 BETRAYAL_EARLIEST = 30
 
+#: A war this old is going nowhere, and a bot will start offering terms to
+#: anyone it is still fighting.
+#:
+#: Without this, a web of half-signed truces can reach a state that can be
+#: neither won nor ended: in a 2v2 where both pairs partly truced across the
+#: line, the war reduced to two commanders grinding a third they could not
+#: finish, nobody was losing badly enough to sue, and the one commander who
+#: could have been offered terms was a Novice -- who accepts anything but
+#: never asks. Five matches in six ran to the turn limit. Wars end.
+WAR_WEARY = 110
+
 #: Nor will it talk at all before this turn. Early on everyone owns four units
 #: and a Command Post, so "who is winning" is one unlucky skirmish of noise --
 #: and bots read that noise as catastrophe and sued for peace on turn eight.
@@ -262,11 +273,13 @@ class BotBrain:
                 # the leader -- without that clause every bot sued everybody on
                 # turn one and no war ever started.
                 losing = theirs > mine * SUE_FOR_PEACE
+                weary = state.turn >= WAR_WEARY
                 sideshow = (other.pid != strongest.pid
                             and state.hostile(me.pid, strongest.pid)
                             and self._might_of(state, strongest.pid)
                             > mine * SUE_FOR_PEACE)
-                if (losing or sideshow) and (me.pid, other.pid) not in state.offers:
+                if ((losing or sideshow or weary)
+                        and (me.pid, other.pid) not in state.offers):
                     orders.append({"o": "propose", "to": other.pid,
                                    "pact": "truce"})
 

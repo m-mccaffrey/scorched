@@ -413,13 +413,29 @@ All of it is public. In a game played round one table a secret alliance is just
 a conversation, and a betrayal nobody could see coming is a feel-bad rather
 than a twist.
 
-**Bots negotiate too**, from Moderate up. They sue for peace when they are
+**Bots negotiate too**, from Moderate up. They also tire: after about a
+hundred and ten turns a bot starts offering terms to anyone it is still
+fighting, because a war that old is going nowhere. That rule exists because of
+a specific and rather elegant deadlock — in a 2v2 where both pairs had partly
+truced across the line, the war reduced to two commanders grinding a third
+they could not finish; nobody was losing badly enough to sue for peace, and
+the one commander who could have been offered terms was a Novice, who accepts
+anything but never asks. Five matches in six ran to the turn limit.  They sue for peace when they are
 losing, take terms from anyone they cannot beat, and gang up on whoever is
 running away with the war — which is the only brake the game has on a runaway
 leader. A Novice never opens negotiations but accepts any deal put in front of
 it, which makes it a gentle opponent and, less obviously, keeps peace reachable
 for everybody: while one commander refused to talk at all, two who had stopped
 fighting each other sat in a stalemate for a hundred turns.
+
+### Playtesting
+
+    python3 -m tools.playtest --all --games 6 --teams
+
+Runs bot-only games and reports what happened: how long they run, how they
+end, how close they finish, how often the lead changed hands, how much of the
+map anybody ever used, and what a turn cost. It is how the numbers below were
+arrived at, and how the war-weariness rule was found.
 
 ## Ending a war
 
@@ -610,7 +626,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 307 tests
+python3 -m pytest          # 308 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 
