@@ -34,13 +34,20 @@ COST_FOREST = 192
 
 #: The largest map the game will load.
 #:
-#: This used to be 32x24, the exact size the board viewport can show, and the
-#: error said so: "exceeds what the screen can show without scrolling". The
-#: client now scrolls, so the limit is about play and memory rather than
-#: pixels. 96x64 is four times the linear span of the old maps and sixteen
-#: times the area, which is past anything worth authoring by hand.
-MAX_W = 96
-MAX_H = 64
+#: This began at 32x24, the exact size the board viewport can show, with an
+#: error that said "exceeds what the screen can show without scrolling". Then
+#: the client learned to scroll and it became a question of play and memory
+#: rather than pixels.
+#:
+#: It is now a *world* rather than a battlefield: several territories on one
+#: map, with one clock over all of them, simulated only where something is
+#: happening. The ceiling is what a Pi 400 can hold -- the client keeps a
+#: pre-composited terrain surface and a fog surface, both 14 bytes-ish a tile,
+#: so 256x160 is about 40,000 tiles and roughly 45MB of surfaces. Past that
+#: the client has to composite terrain per region too, which is work nobody
+#: has needed yet.
+MAX_W = 256
+MAX_H = 160
 
 _PASSABLE = set(OPEN + FOREST + NODE + SPAWNS)
 _BLOCKS_SIGHT = {ROCK, FOREST}
@@ -189,8 +196,8 @@ class TileMap:
 
         if width > MAX_W or len(rows) > MAX_H:
             raise MapError(
-                f"{name}: {width}x{len(rows)} exceeds the {MAX_W}x{MAX_H} "
-                "the screen can show without scrolling")
+                f"{name}: {width}x{len(rows)} exceeds the "
+                f"{MAX_W}x{MAX_H} a world may be")
 
         spawns: dict[int, tuple[int, int]] = {}
         nodes: list[tuple[int, int]] = []
@@ -259,7 +266,7 @@ class TileMap:
 # ---------------------------------------------------------------------------
 
 def find_path(tilemap: TileMap, start: tuple[int, int], goal: tuple[int, int],
-              blocked: set | None = None, limit: int = 4000) -> list:
+              blocked: set | None = None, limit: int = 0) -> list:
     """A* from ``start`` to ``goal``, returning the tiles after ``start``.
 
     ``blocked`` holds tiles occupied by other units and buildings. They are
@@ -277,6 +284,13 @@ def find_path(tilemap: TileMap, start: tuple[int, int], goal: tuple[int, int],
     blocked = blocked or set()
     if goal in blocked:
         return []
+    # The cap exists so a hopeless search cannot stall a turn, and it has to
+    # scale with the board: a flat 4000 was ample for a 32x24 map and silently
+    # broke a 224x128 world, where a corner-to-corner march explores far more
+    # than that and simply gave up. A unit that quietly refuses to walk across
+    # the world is a much worse bug than a slow path.
+    if limit <= 0:
+        limit = max(4000, tilemap.width * tilemap.height)
 
     # Everything the inner loop touches is bound to a local first. At a few
     # hundred thousand iterations a match, attribute lookups are the cost.

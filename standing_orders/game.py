@@ -33,7 +33,12 @@ class Settings:
     map_name: str = "duel"
     teams: bool = False           # 2v2 when four players; free-for-all otherwise
     start_supply: int = 20
-    order_time: int = 90          # seconds; 0 disables the clock
+    #: Seconds to write orders; 0 disables the clock. Two minutes rather than
+    #: ninety seconds because a world has more than one front in it, and
+    #: deciding which front gets your attention this turn is part of the game
+    #: rather than an obstacle to it. The turn still resolves the moment
+    #: everyone commits, so a quiet turn costs nobody the full two minutes.
+    order_time: int = 120
 
     def clamp(self) -> "Settings":
         self.start_supply = max(0, min(200, int(self.start_supply)))

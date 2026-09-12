@@ -308,6 +308,35 @@ Engineer) and Engineering (structures finish a turn sooner, Barricades cost 1).
 Its real job is to give a healthy economy somewhere to spend once quantity is
 capped.
 
+**One world, one clock.** The largest maps are *worlds* rather than
+battlefields — The Wide World is 224x128, forty times the area of the original
+maps, with four nations in the corners. There is no separate campaign layer and
+no series of matches: you give orders anywhere you have forces and every front
+resolves together on the same turn. Which front gets your attention this turn
+is itself a decision, which is why the order clock is two minutes rather than
+ninety seconds — and the turn still resolves the instant everybody commits.
+
+A world costs about what a battlefield costs. 28,672 tiles resolve in 83ms a
+turn against 11ms for the 672-tile original, because the price of a turn tracks
+the armies in it and how far they are walking, not the ground they are walking
+over.
+
+Two things had to be true for that. **Units plan to a horizon**, roughly thirty
+tiles, and plan the next leg when they run out of road — A* explores about the
+square of the distance, so planning a whole cross-world march cost 9ms a call
+and was 80% of a turn; planning to the horizon made turns 65% faster and the
+unit still arrives. And **the pathfinder's node cap scales with the board**: a
+flat 4,000 was ample for a 32x24 map and silently refused to cross a world,
+which is a far worse bug than a slow path because the unit just declines to
+walk and says nothing.
+
+The obvious optimisation — simulate only the regions where something is
+happening — was built, measured and removed. On a 224x128 world it left 93% of
+regions live anyway, because waking a region has to wake its neighbours or
+units stop dead at the boundary, and it came out 3% *slower* for the
+bookkeeping while risking a siege silently freezing. Quiet ground was already
+nearly free.
+
 **Maps come in two sizes.** The three original maps fit the screen entirely and
 never scroll. *Long Valley* is 64x44 — four times the area — and the view
 scrolls: arrows or WASD, the pointer at the screen edge, Home to snap back to
@@ -507,7 +536,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 280 tests
+python3 -m pytest          # 283 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

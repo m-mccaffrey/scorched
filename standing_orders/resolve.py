@@ -49,6 +49,17 @@ ATTACK_EVERY = 4
 MOVE_PACE = 8
 ADVANCE_PACE = 7
 
+#: A world is simulated whole, every turn, and that is affordable because the
+#: cost of a turn tracks the number of *armies* and how far they are walking
+#: rather than the acreage they are walking over.
+#:
+#: Simulating only the regions where something could happen was tried and
+#: removed. On a 224x128 world with four sides it left 93% of regions live
+#: anyway -- waking a region has to wake its neighbours, or a unit stops dead
+#: at a boundary -- and it measured 3% *slower* for the bookkeeping, while
+#: carrying a real risk that a bug in it silently freezes a siege. The quiet
+#: parts of a world were already nearly free; what costs is pathfinding.
+
 #: The beat an airstrike lands on: halfway through the turn, not at the start.
 #:
 #: Landing it at beat zero would just hit where everyone was standing when
@@ -108,6 +119,26 @@ def static_obstacles(occupancy: dict) -> set:
     """
     return {tile for tile, (kind, _ident) in occupancy.items()
             if kind == "building"}
+
+
+#: How far ahead a unit plans, in tiles.
+#:
+#: A* explores roughly the square of the distance, so a march across a 224x128
+#: world was costing 9ms a call and made up 80% of a turn. A unit does not need
+#: the whole route before it can start walking: it plans to the horizon, walks,
+#: and plans again, exactly as its ``goal`` and reroute machinery already allow.
+#: Beyond a horizon this far away the terrain is unscouted guesswork anyway.
+PLAN_HORIZON = 28
+
+
+def horizon_between(start, goal) -> tuple:
+    """A waypoint on the way to ``goal``, no further off than the horizon."""
+    dx, dy = goal[0] - start[0], goal[1] - start[1]
+    span = max(abs(dx), abs(dy))
+    if span <= PLAN_HORIZON:
+        return goal
+    return (start[0] + dx * PLAN_HORIZON // span,
+            start[1] + dy * PLAN_HORIZON // span)
 
 
 def path_toward(tilemap, start, goal, blocked) -> list:
@@ -201,12 +232,21 @@ def apply_orders(state: MatchState, orders: dict, result: TurnResult,
 
 
 def _route(tilemap, start, goal, blocked, routes: dict) -> list:
-    """``path_toward``, memoised for the turn. Paths are returned as copies:
-    a unit pops tiles off its own path as it walks."""
-    key = (start, goal)
+    """``path_toward``, capped at the planning horizon and memoised for the turn.
+
+    Paths are returned as copies, because a unit pops tiles off its own path as
+    it walks. A distant goal is planned only as far as the horizon; the unit
+    keeps the real goal and plans the next leg when it runs out of road.
+    """
+    waypoint = horizon_between(start, goal)
+    key = (start, waypoint)
     path = routes.get(key)
     if path is None:
-        path = path_toward(tilemap, start, goal, blocked)
+        path = path_toward(tilemap, start, waypoint, blocked)
+        if not path and waypoint != goal:
+            # The horizon landed somewhere unreachable -- a lake, a cliff.
+            # Fall back to planning the whole way rather than refusing to move.
+            path = path_toward(tilemap, start, goal, blocked)
         routes[key] = path
     return list(path)
 
@@ -714,8 +754,31 @@ class Resolver:
                         at=list(building.tile))
 
     # -- end of turn -------------------------------------------------------
+    def _march_on(self) -> None:
+        """Give the next leg to anyone who walked to the end of their route.
+
+        Units plan only as far as the horizon, so a long march is a series of
+        legs rather than one enormous search. The unit has always kept its real
+        goal; this is where it looks up and works out the next stretch.
+        """
+        blocked = static_obstacles(self.occupancy)
+        routes: dict = {}
+        for unit in sorted(self.state.units.values(), key=lambda u: u.uid):
+            if not unit.alive or unit.path or unit.goal is None:
+                continue
+            if unit.tile == unit.goal or unit.job is not None:
+                continue
+            if unit.stance not in ("move", "attack"):
+                continue
+            path = _route(self.state.map, unit.tile, unit.goal, blocked, routes)
+            if path:
+                unit.path = path
+            else:
+                unit.goal = None          # nothing more to be done about it
+
     def _end_of_turn(self) -> None:
         beat = SUBTICKS
+        self._march_on()
         self._work_sites(beat)
         for building in sorted(self.state.buildings.values(), key=lambda b: b.bid):
             if not building.alive:

@@ -996,3 +996,51 @@ def test_pace_leaves_the_movement_arithmetic_whole():
             out.append(unit.x - 2)
         assert marched[0] * ADVANCE_PACE // MOVE_PACE == advanced[0], \
             f"pace {pace}: advancing is not exactly 7/8 of marching"
+
+
+# -- long marches ----------------------------------------------------------
+
+def test_a_unit_crosses_a_world_one_leg_at_a_time():
+    """Units plan only as far as the horizon, so a long march is a series of
+    legs. The unit keeps its real goal and must still arrive."""
+    from standing_orders.resolve import PLAN_HORIZON
+    width = PLAN_HORIZON * 4
+    state = paced_arena(1, width=width, height=9)
+    scout = state.add_unit(0, "scout", 2, 4)
+    goal = (width - 3, 4)
+    resolve_turn(state, {0: [{"o": "move", "uid": scout.uid, "to": list(goal)}]})
+    assert len(scout.path) <= PLAN_HORIZON + 1, "planned past the horizon"
+
+    for _ in range(width * 2):
+        if scout.tile == goal:
+            break
+        resolve_turn(state, {})
+    assert scout.tile == goal, f"stalled at {scout.tile}, wanted {goal}"
+
+
+def test_a_march_does_not_restart_when_the_horizon_is_reached():
+    """Running out of road must not clear the order -- that was the bug that
+    made a scout stop after one turn, in a different disguise."""
+    from standing_orders.resolve import PLAN_HORIZON
+    state = paced_arena(1, width=PLAN_HORIZON * 3, height=9)
+    unit = state.add_unit(0, "trooper", 2, 4)
+    goal = (PLAN_HORIZON * 3 - 3, 4)
+    resolve_turn(state, {0: [{"o": "move", "uid": unit.uid, "to": list(goal)}]})
+    for _ in range(40):
+        resolve_turn(state, {})
+        if unit.tile == goal:
+            break
+        assert unit.goal == goal, "the unit forgot where it was going"
+        assert unit.path or unit.tile == goal, "the unit ran out of road"
+
+
+def test_the_pathfinder_cap_scales_with_the_board():
+    """A flat cap sized for a 32x24 map silently refused to cross a world."""
+    from standing_orders.grid import find_path
+    from standing_orders.game import load_map
+    world = load_map("wideworld")
+    spawns = sorted(world.spawns.items())
+    far = find_path(world, spawns[0][1], spawns[-1][1], set())
+    assert far, "a unit cannot walk across the world"
+    assert not find_path(world, spawns[0][1], spawns[-1][1], set(), limit=4000), \
+        "this is the cap that used to be hard-coded"
