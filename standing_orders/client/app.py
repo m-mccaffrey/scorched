@@ -50,6 +50,10 @@ SCROLL_SPEED = 520
 #: How close to the edge of the board the pointer has to be to pan.
 EDGE_PAN = 12
 
+#: Supply sent by one press of the gift button. Small enough to be a gesture
+#: and large enough to matter when somebody is on the ropes.
+GIFT_SIZE = 15
+
 #: Height reserved at the foot of the command panel for the minimap. The
 #: tightest panel state (a Command Post, with production and research) draws to
 #: within 75px of the bottom, so this has to fit inside that and leave a margin.
@@ -103,6 +107,7 @@ class App:
         self.queued: list = []            # train / build orders
         self.placing: str | None = None   # building code awaiting a site
         self.aiming: int | None = None    # Airfield bid awaiting an aim point
+        self.parley = False               # the diplomacy table is open
         self.selected_building: int | None = None
         self.drag_anchor: tuple | None = None
         self.ready_sent = False
@@ -156,6 +161,10 @@ class App:
 
     def _update(self, dt: float) -> None:
         if self.replay is not None:
+            for line in self.replay.notes:
+                if line not in self.log:
+                    self.log.append(line)
+            del self.log[:-8]
             if not self.replay.update(dt):
                 self._finish_replay()
         if self.time_left > 0:
@@ -178,6 +187,7 @@ class App:
         self.queued.clear()
         self.placing = None
         self.aiming = None
+        self.parley = False
         self.selected_building = None
         self.ready_sent = False
 
@@ -556,7 +566,9 @@ class App:
     def _game_key(self, event) -> None:
         key = event.key
         if key == pygame.K_ESCAPE:
-            if self.aiming is not None:
+            if self.parley:
+                self.parley = False
+            elif self.aiming is not None:
                 self.aiming = None
                 self.status = "Airstrike called off"
             elif self.placing:
@@ -581,6 +593,8 @@ class App:
             self._select_all_units()
         elif key == pygame.K_HOME:
             self._look_at_home()
+        elif key == pygame.K_g:
+            self.parley = not self.parley
 
     # -- camera ------------------------------------------------------------
     def _scroll_camera(self, dt: float) -> None:
@@ -668,6 +682,14 @@ class App:
     def _game_click(self, event) -> None:
         board = self.renderer.board
         if board is None:
+            return
+        if self.parley:
+            if event.button == 1:
+                for button in self._buttons:
+                    if button.clicked(self.mouse):
+                        self.sfx.play("click")
+                        self._panel_action(button.action)
+                        return
             return
         tile = board.to_tile(event.pos)
 
@@ -799,6 +821,10 @@ class App:
             self._begin_airstrike()
         elif action == "promote":
             self._queue_promotions()
+        elif action == "parley":
+            self.parley = not self.parley
+        elif action.startswith("dip:"):
+            self._queue_diplomacy(action.split(":")[1:])
         elif action == "skip" and self.replay is not None:
             self.replay.skip()
 
@@ -867,6 +893,143 @@ class App:
                        "halfway through the turn")
         self.sfx.play("order")
         self.ready_sent = False
+
+    # -- diplomacy ----------------------------------------------------------
+    def _queue_diplomacy(self, parts: list) -> None:
+        """Queue one diplomatic order from the table.
+
+        These replace rather than stack: offering a truce and then an alliance
+        to the same commander in one turn should send the second, not both.
+        """
+        kind = parts[0]
+        target = int(parts[1]) if len(parts) > 1 else -1
+        self.queued = [o for o in self.queued
+                       if not (o["o"] in ("propose", "accept", "declare", "gift")
+                               and o.get("to", o.get("from")) == target)]
+        if kind == "armistice":
+            calling = self.my_pid in self.view.armistice
+            pending = next((o for o in self.queued if o["o"] == "armistice"), None)
+            if pending is not None:
+                self.queued.remove(pending)
+                want = not pending.get("on", True)
+            else:
+                want = not calling
+            self.queued.append({"o": "armistice", "on": want})
+            self.status = ("Calling for an armistice -- it takes everyone"
+                           if want else "Armistice call withdrawn")
+        elif kind in ("truce", "alliance"):
+            self.queued.append({"o": "propose", "to": target, "pact": kind})
+            self.status = f"Offering {'an' if kind[0] == 'a' else 'a'} {kind}"
+        elif kind == "accept":
+            self.queued.append({"o": "accept", "from": target})
+            self.status = "Accepting"
+        elif kind == "declare":
+            self.queued.append({"o": "declare", "to": target})
+            self.status = "War declared -- it takes effect at the end of the turn"
+        elif kind == "gift":
+            if self._spent() + GIFT_SIZE > self.view.supply:
+                self._complain("Not enough supply")
+                self.sfx.play("deny")
+                return
+            self.queued.append({"o": "gift", "to": target, "supply": GIFT_SIZE})
+            self.status = f"Sending {GIFT_SIZE} supply"
+        self.sfx.play("order")
+        self.ready_sent = False
+
+    def _draw_parley(self) -> None:
+        """The diplomacy table: who stands where, and what you can offer them.
+
+        Everything on it is public. In a game played round one table a secret
+        alliance is just a conversation, and a betrayal nobody could see coming
+        is a feel-bad rather than a twist -- so pacts, offers, declarations and
+        the armistice call are all visible to everybody.
+        """
+        self._draw_game()
+        veil = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        veil.fill((6, 7, 12, 238))
+        self.screen.blit(veil, (0, 0))
+        ui.draw_text(self.screen, "THE TABLE", SCREEN_W // 2, 10, 24, UI_ACCENT,
+                     anchor="midtop")
+        ui.draw_text(self.screen,
+                     "the war ends when every commander calls it",
+                     SCREEN_W // 2, 36, 13, UI_DIM, anchor="midtop")
+        ui.draw_text(self.screen, "everyone keeps what they hold",
+                     SCREEN_W // 2, 48, 13, UI_DIM, anchor="midtop")
+
+        others = [row for row in sorted(self.standings or [],
+                                        key=lambda r: r["pid"])
+                  if row["pid"] != self.my_pid and row.get("alive")]
+        y = 66
+        for row in others:
+            pid = row["pid"]
+            pact = self.view.pact_with(self.my_pid, pid)
+            breaking = self.view.breaking_with(self.my_pid, pid)
+            offered = self.view.offer_from(pid, self.my_pid)
+            mine_offered = self.view.offer_from(self.my_pid, pid)
+
+            card = pygame.Rect(40, y, SCREEN_W - 80, 72)
+            ui.draw_panel(self.screen, card, UI_PANEL)
+            self.screen.fill(team_color(row.get("color", 0)),
+                             (card.x + 10, card.y + 12, 12, 12))
+            ui.draw_text(self.screen, row["name"][:14], card.x + 30, card.y + 8,
+                         19, UI_TEXT)
+            state_text, tint = {
+                "war": ("AT WAR", UI_WARN),
+                "truce": ("TRUCE", UI_TEXT),
+                "alliance": ("ALLIED", UI_GOOD),
+            }[pact]
+            if breaking:
+                state_text, tint = "WAR DECLARED -- effective this turn", UI_WARN
+            ui.draw_text(self.screen, state_text, card.x + 30, card.y + 28, 14, tint)
+            ui.draw_text(self.screen,
+                         f"{row.get('units', 0)} units   "
+                         f"{self.view.ground.get(pid, 0)} ground",
+                         card.x + 30, card.y + 46, 13, UI_DIM)
+            if pid in self.view.armistice:
+                ui.draw_text(self.screen, "calling for an armistice",
+                             card.right - 10, card.y + 46, 13, UI_GOOD,
+                             anchor="topright")
+            if mine_offered:
+                ui.draw_text(self.screen, f"you offered {mine_offered}",
+                             card.right - 10, card.y + 8, 13, UI_ACCENT,
+                             anchor="topright")
+
+            buttons = []
+            if offered:
+                buttons.append((f"Accept {offered}", f"dip:accept:{pid}"))
+            if pact == "war":
+                buttons.append(("Offer truce", f"dip:truce:{pid}"))
+                buttons.append(("Offer alliance", f"dip:alliance:{pid}"))
+            elif not breaking:
+                buttons.append(("Declare war", f"dip:declare:{pid}"))
+                if pact == "truce":
+                    buttons.append(("Offer alliance", f"dip:alliance:{pid}"))
+            buttons.append((f"Gift {GIFT_SIZE}", f"dip:gift:{pid}"))
+
+            bx = card.right - 8
+            for label, action in reversed(buttons):
+                width = 96 if len(label) < 14 else 116
+                bx -= width + 6
+                self._button((bx, card.y + 24, width, 26), label, action, 14)
+            y += 78
+
+        calling = self.my_pid in self.view.armistice
+        pending = any(o["o"] == "armistice" for o in self.queued)
+        want = next((o.get("on", True) for o in self.queued
+                     if o["o"] == "armistice"), calling)
+        agreed = sum(1 for row in (self.standings or [])
+                     if row.get("alive") and row["pid"] in self.view.armistice)
+        living = sum(1 for row in (self.standings or []) if row.get("alive"))
+        ui.draw_text(self.screen, f"armistice: {agreed} of {living} commanders",
+                     48, SCREEN_H - 48, 14, UI_GOOD if agreed else UI_DIM)
+        self._button((SCREEN_W - 250, SCREEN_H - 54, 190, 28),
+                     "Withdraw the call" if want else "Call for an armistice",
+                     "dip:armistice", 15)
+        if pending:
+            ui.draw_text(self.screen, "queued", SCREEN_W - 250, SCREEN_H - 70,
+                         13, UI_ACCENT)
+        ui.draw_text(self.screen, "G or Esc to close", 48, SCREEN_H - 28, 13,
+                     UI_DIM)
 
     def _queue_promotions(self) -> None:
         """Promote every selected unit that has earned it and can be paid for.
@@ -951,6 +1114,8 @@ class App:
             elif order["o"] == "promote":
                 unit = self.view.units.get(order["uid"])
                 total += promotion_cost(unit.get("rank", 0)) if unit else 0
+            elif order["o"] == "gift":
+                total += int(order.get("supply", 0))
         return total
 
     def _army_size(self) -> int:
@@ -993,8 +1158,11 @@ class App:
     def _draw(self) -> None:
         self._buttons = []
         self._tips = []
-        painter = getattr(self, f"_draw_{self.mode}", self._draw_menu)
-        painter()
+        if self.mode == "game" and self.parley:
+            self._draw_parley()
+        else:
+            painter = getattr(self, f"_draw_{self.mode}", self._draw_menu)
+            painter()
         if self.chat_input is not None:
             ui.draw_text(self.screen, "SAY:", 26, SCREEN_H - 56, 16, UI_ACCENT)
             self.chat_input.draw(self.screen)
@@ -1776,6 +1944,13 @@ class App:
         ui.draw_text(self.screen, "ORDERS", 366, bar.y + 4, 12, UI_DIM)
         ui.draw_text(self.screen, str(orders), 366, bar.y + 15, 20,
                      UI_ACCENT if orders else UI_DIM)
+
+        at_war = sum(1 for row in (self.standings or [])
+                     if row.get("alive") and row["pid"] != self.my_pid
+                     and self.view.pact_with(self.my_pid, row["pid"]) == "war")
+        ui.draw_text(self.screen, "TABLE", 418, bar.y + 4, 12, UI_DIM)
+        ui.draw_text(self.screen, f"{at_war} at war  [G]", 418, bar.y + 15, 14,
+                     UI_WARN if at_war else UI_GOOD)
 
         if self.phase == "orders" and self.replay is None:
             self._button((SCREEN_W - 130, bar.y + 8, 120, 28),

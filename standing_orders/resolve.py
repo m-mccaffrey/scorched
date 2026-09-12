@@ -381,6 +381,9 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
         player.supply -= AIRSTRIKE_COST
         strikes.append((building.bid, player.pid, target))
 
+    elif kind in ("propose", "accept", "declare", "gift", "armistice"):
+        _diplomacy(state, player, order, kind, result)
+
     elif kind == "cancel":
         building = state.buildings.get(int(order.get("bid", -1)))
         if building is None or building.owner != player.pid or not building.queue:
@@ -390,6 +393,95 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
 
     else:
         raise OrderError(f"unknown order '{kind}'")
+
+
+#: Pacts a commander may offer.
+PACTS = ("truce", "alliance")
+
+#: Turns an agreement holds before anyone may tear it up.
+#:
+#: Without this, a pact is worth nothing: bots signed and broke 87 treaties a
+#: match, flipping the instant the arithmetic tipped, and the log became a wall
+#: of declarations nobody could read. A signature that binds for a while is
+#: what makes signing a decision, and what makes a betrayal ten turns later
+#: feel like a betrayal rather than a rounding error.
+PACT_BINDING = 10
+
+
+def _diplomacy(state: MatchState, player, order: dict, kind: str,
+               result: TurnResult) -> None:
+    """Offers, signatures, declarations and gifts.
+
+    Diplomacy is public. Every commander sees who signed what and who is about
+    to break it, because a secret alliance in a game played round one table is
+    just a conversation, and a betrayal nobody can see coming is a feel-bad
+    rather than a twist.
+    """
+    if kind == "armistice":
+        want = bool(order.get("on", True))
+        if want:
+            state.armistice.add(player.pid)
+        else:
+            state.armistice.discard(player.pid)
+        result.add(0, "armistice", pid=player.pid, on=want,
+                   says=(f"{player.name} calls for an armistice" if want
+                         else f"{player.name} withdraws the armistice call"))
+        return
+
+    other_pid = int(order.get("to", order.get("from", -1)))
+    other = state.players.get(other_pid)
+    if other is None or other_pid == player.pid or not other.alive:
+        raise OrderError("no such commander")
+    pair = state.pair(player.pid, other_pid)
+
+    if kind == "propose":
+        pact = str(order.get("pact", "truce"))
+        if pact not in PACTS:
+            raise OrderError("that is not something you can propose")
+        if state.pact_between(*pair) == pact:
+            raise OrderError(f"you already have {'an' if pact[0] == 'a' else 'a'} {pact}")
+        state.offers[(player.pid, other_pid)] = pact
+        result.add(0, "offer", pid=player.pid, to=other_pid, pact=pact,
+                   says=f"{player.name} offers {other.name} a {pact}")
+
+    elif kind == "accept":
+        pact = state.offers.get((other_pid, player.pid))
+        if pact is None:
+            raise OrderError(f"{other.name} has not offered you anything")
+        state.pacts[pair] = pact
+        state.pact_since[pair] = state.turn
+        state.offers.pop((other_pid, player.pid), None)
+        state.offers.pop((player.pid, other_pid), None)
+        state.breaking.discard(pair)
+        result.add(0, "pact", a=pair[0], b=pair[1], pact=pact,
+                   says=f"{player.name} and {other.name} sign {'an' if pact[0] == 'a' else 'a'} {pact}")
+
+    elif kind == "declare":
+        if state.pact_between(*pair) == "war":
+            raise OrderError(f"you are already at war with {other.name}")
+        held = state.turn - state.pact_since.get(pair, state.turn)
+        if held < PACT_BINDING:
+            raise OrderError(
+                f"your agreement with {other.name} holds for "
+                f"{PACT_BINDING - held} more turn"
+                f"{'s' if PACT_BINDING - held != 1 else ''}")
+        # Announced now, effective at the end of the turn. Nobody gets knifed
+        # in the same breath they were offered peace; you get one turn to brace.
+        state.breaking.add(pair)
+        state.armistice.discard(player.pid)
+        result.add(0, "declare", pid=player.pid, to=other_pid,
+                   says=f"{player.name} declares war on {other.name}")
+
+    elif kind == "gift":
+        amount = max(0, int(order.get("supply", 0)))
+        if amount <= 0:
+            raise OrderError("nothing to give")
+        if player.supply < amount:
+            raise OrderError("you do not have that much supply")
+        player.supply -= amount
+        other.supply += amount
+        result.add(0, "gift", pid=player.pid, to=other_pid, amount=amount,
+                   says=f"{player.name} sends {other.name} {amount} supply")
 
 
 def _check_build_site(state: MatchState, target, occupancy) -> None:
@@ -428,7 +520,7 @@ class Resolver:
         self.result = TurnResult()
         self.occupancy = state.occupancy()
         self._cache = VisionCache(state.map)
-        self._teams = sorted({p.team for p in state.players.values()})
+        self._teams = sorted(state.blocs())
         #: Recording what each side saw at each beat is a third of the cost of
         #: a turn, and it exists only so the timeline can be cut down per
         #: player. A match nobody is watching -- a self-play game in a
@@ -715,7 +807,7 @@ class Resolver:
         best_building = None
         best_building_key = None
         for other in self.state.units.values():
-            if not other.alive or self.state.allied(other.owner, owner):
+            if not other.alive or not self.state.hostile(other.owner, owner):
                 continue
             distance = chebyshev(origin, other.tile)
             if distance > reach:
@@ -726,7 +818,7 @@ class Resolver:
         if best_unit is not None:
             return best_unit
         for building in self.state.buildings.values():
-            if not building.alive or self.state.allied(building.owner, owner):
+            if not building.alive or not self.state.hostile(building.owner, owner):
                 continue
             distance = chebyshev(origin, building.tile)
             if distance > reach:
@@ -804,7 +896,24 @@ class Resolver:
         self._capture_nodes(beat)
         self._pay_income(beat)
         self._treat_patients(beat)
+        self._break_pacts(beat)
         self._settle_eliminations(beat)
+
+    def _break_pacts(self, beat: int) -> None:
+        """Turn this turn's declarations into actual wars.
+
+        Declared at the top of the turn, effective at the bottom of it: the
+        turn you announce, the guns stay quiet, and from the next one they do
+        not. That one turn of warning is the difference between a betrayal and
+        a cheap shot.
+        """
+        for pair in sorted(self.state.breaking):
+            self.state.pacts.pop(pair, None)
+            self.state.pact_since.pop(pair, None)
+            self.state.offers.pop(pair, None)
+            self.state.offers.pop((pair[1], pair[0]), None)
+            self.result.add(beat, "war", a=pair[0], b=pair[1])
+        self.state.breaking.clear()
 
     def _settle_eliminations(self, beat: int) -> None:
         """Knock out anyone who has lost their Command Post, and their army.

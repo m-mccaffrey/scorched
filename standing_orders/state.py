@@ -152,6 +152,20 @@ class MatchState:
         self.node_owner: dict = {}
         self._next_uid = 1
         self._next_bid = 1
+        #: Standing agreements, keyed by sorted pid pair. Absent means war.
+        self.pacts: dict = {}
+        #: The turn each agreement was signed, so one cannot be torn up the
+        #: moment it stops being convenient.
+        self.pact_since: dict = {}
+        #: Offers on the table: (from, to) -> pact being offered.
+        self.offers: dict = {}
+        #: Commanders calling for the war to end, everyone keeping what they
+        #: hold. It takes all of them.
+        self.armistice: set = set()
+        #: Declarations that take effect at the end of this turn. Breaking a
+        #: pact is announced rather than instant, so nobody is knifed in the
+        #: same breath they were offered peace -- you get one turn to brace.
+        self.breaking: set = set()
 
     # -- spawning ----------------------------------------------------------
     def add_unit(self, owner: int, code: str, x: int, y: int) -> Unit:
@@ -194,15 +208,104 @@ class MatchState:
         player = self.players.get(pid)
         return player.team if player else -1
 
+    # -- diplomacy ---------------------------------------------------------
+    #
+    # Two commanders are at war unless they have agreed otherwise. A truce
+    # means neither side shoots; an alliance means they also share what they
+    # can see and can work on each other's buildings. Everything downstream
+    # asks these three questions rather than comparing team numbers, which is
+    # what lets a war change shape halfway through.
+
+    @staticmethod
+    def pair(a: int, b: int) -> tuple:
+        return (a, b) if a <= b else (b, a)
+
+    def pact_between(self, a: int, b: int) -> str:
+        if a == b:
+            return "alliance"
+        return self.pacts.get(self.pair(a, b), "war")
+
     def allied(self, a: int, b: int) -> bool:
-        return a == b or self.team_of(a) == self.team_of(b)
+        """Same side: shared sight, shared work, no friendly fire."""
+        return a == b or self.pact_between(a, b) == "alliance"
+
+    def hostile(self, a: int, b: int) -> bool:
+        """Will shoot on sight. A truce stops this without making friends."""
+        return a != b and self.pact_between(a, b) == "war"
+
+    def at_peace(self, a: int, b: int) -> bool:
+        return not self.hostile(a, b)
+
+    def bloc_of(self, pid: int) -> int:
+        """Which sight-sharing group a commander belongs to.
+
+        Alliances are not transitive by agreement -- A and C may both be
+        allied to B without having agreed anything with each other -- but
+        vision has to be *some* partition, and anything else means sharing
+        sight with someone you never signed with. Blocs are the connected
+        components of the alliance graph, named by their lowest member, which
+        keeps the answer stable and free of who-asked-first ordering.
+        """
+        seen = {pid}
+        frontier = [pid]
+        while frontier:
+            current = frontier.pop()
+            for other in self.players:
+                if other in seen or not self.allied(current, other):
+                    continue
+                seen.add(other)
+                frontier.append(other)
+        return min(seen)
+
+    def blocs(self) -> set:
+        return {self.bloc_of(pid) for pid in self.players}
+
+    def holding(self, pid: int) -> int:
+        """What a commander would keep if the war stopped now.
+
+        Resource nodes are the territory of this game -- the thing worth
+        marching to and the thing worth arguing over -- so they carry the
+        weight, with standing structures as the tiebreak. This is what makes a
+        negotiated peace a *settlement* rather than an off-switch: without a
+        result, stopping is free, every bot works that out, and a four-way war
+        ends in handshakes on turn twenty-three with nobody having played.
+        """
+        nodes = sum(1 for owner in self.node_owner.values() if owner == pid)
+        works = sum(1 for b in self.buildings.values()
+                    if b.owner == pid and b.alive and b.operational)
+        return nodes * 10 + works
+
+    def bloc_holding(self, pid: int) -> int:
+        """What a commander's whole side holds."""
+        bloc = self.bloc_of(pid)
+        return sum(self.holding(p.pid) for p in self.players.values()
+                   if p.alive and self.bloc_of(p.pid) == bloc)
+
+    def everyone_at_peace(self) -> bool:
+        """Is anybody still shooting at anybody?"""
+        living = [p.pid for p in self.players.values() if p.alive]
+        return all(self.at_peace(a, b)
+                   for index, a in enumerate(living) for b in living[index + 1:])
+
+    def armistice_agreed(self) -> bool:
+        """Has every commander still standing called for the war to end?
+
+        Deliberately *not* the same question as "is anybody shooting". Two
+        neighbours agreeing to stop fighting each other is a truce, and a
+        four-way war is not over because two of its corners went quiet --
+        which is exactly the mistake that had bots shaking hands on turn
+        twenty with nobody having played. Ending the war is its own act, and
+        it takes everybody.
+        """
+        living = [p.pid for p in self.players.values() if p.alive]
+        return len(living) > 1 and all(pid in self.armistice for pid in living)
 
     def living_teams(self) -> set:
-        """Teams that still hold at least one Command Post."""
+        """Blocs that still hold at least one Command Post."""
         teams = set()
         for building in self.buildings.values():
             if building.alive and building.code == "base":
-                teams.add(self.team_of(building.owner))
+                teams.add(self.bloc_of(building.owner))
         return teams
 
     def has_base(self, pid: int) -> bool:

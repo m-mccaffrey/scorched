@@ -90,6 +90,9 @@ class ReplayPlayer:
         #: uid -> (from_tile, to_tile, beat the step began)
         self._motion: dict = {}
         self._revealed: set = set()
+        #: Lines for the log. Diplomacy happens off the board, so there is
+        #: nowhere to draw it -- it is read, not watched.
+        self.notes: list = []
 
     # -- update ------------------------------------------------------------
     def update(self, dt: float) -> bool:
@@ -242,6 +245,15 @@ class ReplayPlayer:
                                           UI_ACCENT, life=1.4))
             if self.sfx:
                 self.sfx.play("ready")
+
+        elif kind in ("offer", "pact", "declare", "war", "gift", "armistice"):
+            # Politics happen off the board, so there is nowhere to draw them.
+            # They go to the log, where everyone reads what everyone did.
+            line = event.get("says")
+            if line and line not in self.notes:
+                self.notes.append(line)
+            if self.sfx and kind in ("pact", "declare"):
+                self.sfx.play("ready" if kind == "pact" else "deny")
 
         elif kind == "income":
             self.view.supply = event.get("total", self.view.supply)

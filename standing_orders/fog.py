@@ -16,7 +16,12 @@ from .grid import visible_tiles
 
 #: Events every player sees regardless of where they happened. Eliminations
 #: are public knowledge; a player's own income is sent only to them.
-ALWAYS_PUBLIC = frozenset({"eliminated"})
+#: Diplomacy is public. A secret alliance between people sitting at one table
+#: is just a conversation, and a betrayal nobody could see coming is a
+#: feel-bad rather than a twist -- so every offer, signature, declaration and
+#: gift is visible to everyone, wherever it happened.
+ALWAYS_PUBLIC = frozenset({"eliminated", "offer", "pact", "declare", "war",
+                           "gift"})
 PRIVATE_TO_OWNER = frozenset({"income"})
 
 
@@ -43,14 +48,19 @@ class VisionCache:
         return got
 
 
-def team_vision(state, team: int, cache: VisionCache) -> frozenset:
-    """Every tile the given team can currently see."""
+def team_vision(state, bloc: int, cache: VisionCache) -> frozenset:
+    """Every tile a sight-sharing bloc can currently see.
+
+    A bloc is whoever is currently allied, not whoever started on the same
+    team -- so signing an alliance mid-war opens your maps to each other, and
+    breaking one closes them again.
+    """
     seen: set = set()
     for unit in state.units.values():
-        if unit.alive and state.team_of(unit.owner) == team:
+        if unit.alive and state.bloc_of(unit.owner) == bloc:
             seen |= cache.disc(unit.tile, unit.type.vision)
     for building in state.buildings.values():
-        if building.alive and state.team_of(building.owner) == team:
+        if building.alive and state.bloc_of(building.owner) == bloc:
             seen |= cache.disc(building.tile, building.type.vision)
     return frozenset(seen)
 
@@ -99,12 +109,12 @@ def filter_events(events: list, vision_by_beat: dict, viewer_team: int,
 
 def visible_state(state, viewer_pid: int, vision: frozenset) -> dict:
     """The end-of-turn snapshot one player is allowed to see."""
-    team = state.team_of(viewer_pid)
+    team = state.bloc_of(viewer_pid)
     units = []
     for unit in state.units.values():
         if not unit.alive:
             continue
-        friendly = state.team_of(unit.owner) == team
+        friendly = state.bloc_of(unit.owner) == team
         if not friendly and unit.tile not in vision:
             continue
         wire = unit.to_wire()
@@ -120,9 +130,9 @@ def visible_state(state, viewer_pid: int, vision: frozenset) -> dict:
     for building in state.buildings.values():
         if not building.alive:
             continue
-        if state.team_of(building.owner) == team or building.tile in vision:
+        if state.bloc_of(building.owner) == team or building.tile in vision:
             wire = building.to_wire()
-            if state.team_of(building.owner) == team:
+            if state.bloc_of(building.owner) == team:
                 wire["stalled"] = state.site_is_stalled(building)
             buildings.append(wire)
     return {
@@ -135,4 +145,10 @@ def visible_state(state, viewer_pid: int, vision: frozenset) -> dict:
         "supply": state.players[viewer_pid].supply if viewer_pid in state.players else 0,
         "cap": state.army_cap_of(viewer_pid),
         "army": state.army_size(viewer_pid),
+        "pacts": [[list(pair), pact] for pair, pact in sorted(state.pacts.items())],
+        "offers": [[list(pair), pact] for pair, pact in sorted(state.offers.items())],
+        "breaking": [list(pair) for pair in sorted(state.breaking)],
+        "armistice": sorted(state.armistice),
+        "ground": {str(p.pid): state.holding(p.pid)
+                   for p in state.players.values() if p.alive},
     }

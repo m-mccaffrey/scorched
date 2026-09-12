@@ -362,6 +362,55 @@ drag.
 dimmed; ground you have never seen is black. Enemies you have seen and lost
 track of linger as ghosts at their last known position.
 
+## Diplomacy
+
+Four commanders, and who is on whose side is not decided at the start. Press
+**G** for the table.
+
+Two commanders are **at war** unless they have agreed otherwise. A **truce**
+means neither side shoots; an **alliance** means they also share what they can
+see and can finish each other's buildings. You can offer either, accept what is
+offered, hand over supply to keep somebody in the fight, and tear any of it up.
+
+Three rules make it mean something:
+
+- **An offer is not an agreement.** Until somebody signs, the shooting carries
+  on.
+- **A declaration takes a turn to bite.** War is announced at the top of a turn
+  and effective at the bottom of it, so the guns stay quiet the turn you betray
+  someone. That turn of warning is the difference between a betrayal and a
+  cheap shot at somebody who trusted you.
+- **A signature binds for ten turns.** Without that a pact is worth nothing —
+  bots signed and tore up eighty-seven treaties a match, flipping the instant
+  the arithmetic tipped.
+
+All of it is public. In a game played round one table a secret alliance is just
+a conversation, and a betrayal nobody could see coming is a feel-bad rather
+than a twist.
+
+**Bots negotiate too**, from Moderate up. They sue for peace when they are
+losing, take terms from anyone they cannot beat, and gang up on whoever is
+running away with the war — which is the only brake the game has on a runaway
+leader. A Novice never opens negotiations but accepts any deal put in front of
+it, which makes it a gentle opponent and, less obviously, keeps peace reachable
+for everybody: while one commander refused to talk at all, two who had stopped
+fighting each other sat in a stalemate for a hundred turns.
+
+## Ending a war
+
+**By conquest**, destroying every enemy Command Post. Or **by armistice**: when
+every commander still standing calls for the war to end, it ends, and everyone
+keeps what they hold. Whoever holds most has won it.
+
+That second ending is what makes this a war rather than a deathmatch, and
+getting it right took three goes. Ending the war on "is anybody still shooting"
+is wrong — two neighbours going quiet does not end a four-way war, and bots
+found that out and were shaking hands on turn twenty with nobody having played.
+Calling the war off is its own act and it takes everybody. And peace has to be
+a *settlement*: without ground held deciding it, stopping costs nothing, every
+bot works that out, and three matches in eight ended before turn thirty with
+all four still alive.
+
 **Win by destroying every enemy Command Post.** There is no turn limit. Losing
 your Command Post takes your remaining forces with it.
 
@@ -536,7 +585,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 283 tests
+python3 -m pytest          # 301 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

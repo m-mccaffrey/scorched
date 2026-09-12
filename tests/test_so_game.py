@@ -348,3 +348,95 @@ def test_tuning_candidates_always_describe_a_real_ladder():
         assert built[ANCHOR] == shipped[ANCHOR], "the beginners' bot is pinned"
 
     assert profiles(baseline()) == shipped, "baseline must round-trip exactly"
+
+
+def test_a_war_ends_when_every_commander_calls_it():
+    """The armistice: not the same question as "is anybody shooting".
+
+    Two neighbours going quiet does not end a four-way war, and conflating
+    the two had bots shaking hands on turn twenty with nobody having played.
+    """
+    match = started(4)
+    state = match.state
+    living = [p.pid for p in state.players.values() if p.alive]
+
+    for pid in living[:-1]:
+        match.submit(pid, [{"o": "armistice"}])
+    match.submit(living[-1], [])
+    match.resolve()
+    assert match.begin_orders(), "a war does not end while somebody wants it"
+
+    match.submit(living[-1], [{"o": "armistice"}])
+    for pid in living[:-1]:
+        match.submit(pid, [])
+    match.resolve()
+    assert not match.begin_orders()
+    assert match.phase == PHASE_OVER and match.peace
+
+
+def test_declaring_war_withdraws_your_call_for_peace():
+    match = started(2)
+    a, b = sorted(match.state.players)
+    match.submit(a, [{"o": "armistice"}])
+    match.submit(b, [])
+    match.resolve()
+    match.begin_orders()
+    assert a in match.state.armistice
+
+    match.submit(a, [{"o": "propose", "to": b, "pact": "truce"}])
+    match.submit(b, [])
+    match.resolve(); match.begin_orders()
+    match.submit(b, [{"o": "accept", "from": a}])
+    match.submit(a, [])
+    match.resolve(); match.begin_orders()
+    match.state.turn += 50
+    match.submit(a, [{"o": "declare", "to": b}])
+    match.submit(b, [])
+    match.resolve()
+    assert a not in match.state.armistice, \
+        "you cannot ask for peace and declare war in the same breath"
+
+
+def test_an_armistice_is_settled_on_ground_held():
+    """Peace is a settlement. Whoever holds most has won the war without
+    finishing it -- otherwise stopping is free and every bot works that out."""
+    match = started(2)
+    state = match.state
+    a, b = sorted(state.players)
+    for tile in list(state.map.nodes)[:3]:
+        state.node_owner[tile] = b
+    for pid in (a, b):
+        match.submit(pid, [{"o": "armistice"}])
+    match.resolve()
+    match.begin_orders()
+    assert match.peace
+    assert match.winner_team == state.bloc_of(b), \
+        "the commander holding the ground carries the settlement"
+
+
+def test_starting_teams_become_signed_alliances():
+    match = started(4, teams=True)
+    state = match.state
+    for player in state.players.values():
+        for other in state.players.values():
+            if player.pid == other.pid:
+                continue
+            same = player.team == other.team
+            assert state.allied(player.pid, other.pid) is same
+            assert state.hostile(player.pid, other.pid) is not same
+
+
+def test_every_skill_files_diplomatic_orders_the_rules_accept():
+    """Bots negotiate. What they must never do is propose the illegal."""
+    for skill in SKILLS:
+        match = started(4)
+        match.state.turn = 60           # past every "not yet" gate
+        brain = BotBrain(skill, random.Random(2))
+        for pid in sorted(match.state.players):
+            match.submit(pid, brain.plan(match, match.state.players[pid]))
+        timelines = match.resolve()
+        for pid, timeline in timelines.items():
+            bad = [r for r in timeline["rejected"]
+                   if any(word in r for word in
+                          ("offered", "already", "no such commander", "holds for"))]
+            assert not bad, f"{skill}: {bad}"

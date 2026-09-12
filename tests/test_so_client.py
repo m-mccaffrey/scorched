@@ -280,3 +280,46 @@ def test_the_minimap_band_is_reserved_in_every_panel_state(app):
         assert app._minimap_rect() == rect, "the minimap moved between states"
     app.selected.clear()
     app.selected_building = None
+
+
+def test_the_table_offers_only_what_the_relation_allows(app):
+    if not app.standings:
+        pytest.skip("no live match")
+    app.queued.clear()
+    app.parley = True
+    app._draw()
+    actions = {b.action for b in app._buttons if b.action.startswith("dip:")}
+    app.parley = False
+    assert actions, "the table offered nothing at all"
+    assert any(a.startswith("dip:truce") or a.startswith("dip:accept")
+               for a in actions)
+    assert "dip:armistice" in actions
+
+
+def test_diplomatic_orders_replace_rather_than_stack(app):
+    """Offering a truce and then an alliance to the same commander should send
+    the second, not both."""
+    if not app.standings:
+        pytest.skip("no live match")
+    app.queued.clear()
+    app.view.supply = 500
+    other = next(r["pid"] for r in app.standings if r["pid"] != app.my_pid)
+    app._queue_diplomacy(["truce", other])
+    app._queue_diplomacy(["alliance", other])
+    toward = [o for o in app.queued if o.get("to") == other]
+    assert len(toward) == 1 and toward[0]["pact"] == "alliance"
+    app.queued.clear()
+
+
+def test_a_gift_is_costed_against_the_turn_budget(app):
+    from standing_orders.client.app import GIFT_SIZE
+    if not app.standings:
+        pytest.skip("no live match")
+    app.queued.clear()
+    app.view.supply = GIFT_SIZE + 1
+    other = next(r["pid"] for r in app.standings if r["pid"] != app.my_pid)
+    app._queue_diplomacy(["gift", other])
+    assert app._spent() == GIFT_SIZE
+    app._queue_diplomacy(["gift", other])
+    assert len(app.queued) == 1, "a second gift you cannot afford is refused"
+    app.queued.clear()

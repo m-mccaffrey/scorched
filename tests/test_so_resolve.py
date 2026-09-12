@@ -135,13 +135,24 @@ def test_gunners_outrange_melee():
     assert gunner.hp == UNIT["ranged"].hp      # bruiser cannot reach back
 
 
-def test_allies_do_not_shoot_each_other():
+@pytest.mark.parametrize("pact", ["alliance", "truce"])
+def test_nobody_shoots_across_an_agreement(pact):
+    """An alliance and a truce both stop the shooting. They differ in what
+    else they share, not in whether the guns go quiet."""
     state = arena()
-    state.players[1].team = 0                  # same team
+    state.pacts[state.pair(0, 1)] = pact
     a = state.add_unit(0, "trooper", 5, 5)
     b = state.add_unit(1, "trooper", 6, 5)
     resolve_turn(state, {})
     assert (a.hp, b.hp) == (UNIT["trooper"].hp, UNIT["trooper"].hp)
+
+
+def test_war_is_the_default():
+    state = arena()
+    a = state.add_unit(0, "trooper", 5, 5)
+    b = state.add_unit(1, "trooper", 6, 5)
+    resolve_turn(state, {})
+    assert a.hp < UNIT["trooper"].hp and b.hp < UNIT["trooper"].hp
 
 
 def test_deaths_are_reported_and_stop_the_unit_acting():
@@ -1044,3 +1055,107 @@ def test_the_pathfinder_cap_scales_with_the_board():
     assert far, "a unit cannot walk across the world"
     assert not find_path(world, spawns[0][1], spawns[-1][1], set(), limit=4000), \
         "this is the cap that used to be hard-coded"
+
+
+# -- diplomacy -------------------------------------------------------------
+
+def test_an_offer_is_not_an_agreement():
+    """Proposing peace does nothing until somebody signs it."""
+    state = arena()
+    a = state.add_unit(0, "trooper", 5, 5)
+    b = state.add_unit(1, "trooper", 6, 5)
+    resolve_turn(state, {0: [{"o": "propose", "to": 1, "pact": "truce"}]})
+    assert state.hostile(0, 1), "an offer on the table is still a war"
+    assert a.hp < a.max_hp and b.hp < b.max_hp
+
+
+def test_signing_a_truce_stops_the_shooting():
+    state = arena()
+    a = state.add_unit(0, "trooper", 5, 5)
+    b = state.add_unit(1, "trooper", 6, 5)
+    resolve_turn(state, {0: [{"o": "propose", "to": 1, "pact": "truce"}]})
+    resolve_turn(state, {1: [{"o": "accept", "from": 0}]})
+    assert state.pact_between(0, 1) == "truce"
+    before = (a.hp, b.hp)
+    resolve_turn(state, {})
+    assert (a.hp, b.hp) == before
+
+
+def test_you_cannot_accept_what_was_never_offered():
+    state = arena()
+    _, rejected = resolve_turn(state, {1: [{"o": "accept", "from": 0}]})
+    assert rejected[1] and "offered" in rejected[1][0]
+    assert state.hostile(0, 1)
+
+
+def test_a_declaration_takes_a_turn_to_bite():
+    """One turn of warning. A betrayal should be seen coming, or it is just a
+    cheap shot at somebody who trusted you."""
+    from standing_orders.resolve import PACT_BINDING
+    state = arena()
+    a = state.add_unit(0, "trooper", 5, 5)
+    b = state.add_unit(1, "trooper", 6, 5)
+    resolve_turn(state, {0: [{"o": "propose", "to": 1, "pact": "truce"}]})
+    resolve_turn(state, {1: [{"o": "accept", "from": 0}]})
+    for _ in range(PACT_BINDING):
+        state.turn += 1
+        resolve_turn(state, {})
+
+    calm = (a.hp, b.hp)
+    result, rejected = resolve_turn(state, {0: [{"o": "declare", "to": 1}]})
+    assert not rejected.get(0), rejected
+    assert (a.hp, b.hp) == calm, "the guns stay quiet the turn war is declared"
+    assert events_of(result, "war"), "and the war is on by the end of it"
+    assert state.hostile(0, 1)
+    resolve_turn(state, {})
+    assert a.hp < calm[0], "shooting resumes the turn after"
+
+
+def test_an_agreement_binds_for_a_while():
+    """Without this a pact is worth nothing and bots tore up 87 a match."""
+    from standing_orders.resolve import PACT_BINDING
+    state = arena()
+    resolve_turn(state, {0: [{"o": "propose", "to": 1, "pact": "truce"}]})
+    resolve_turn(state, {1: [{"o": "accept", "from": 0}]})
+    _, rejected = resolve_turn(state, {0: [{"o": "declare", "to": 1}]})
+    assert rejected[0] and "holds for" in rejected[0][0]
+    assert state.pact_between(0, 1) == "truce"
+
+    state.turn += PACT_BINDING
+    _, rejected = resolve_turn(state, {0: [{"o": "declare", "to": 1}]})
+    assert not rejected.get(0)
+
+
+def test_an_alliance_shares_sight_and_a_truce_does_not():
+    from standing_orders.fog import VisionCache, team_vision
+    state = arena()
+    state.add_unit(0, "trooper", 3, 3)
+    state.add_unit(1, "trooper", 17, 6)
+
+    state.pacts[state.pair(0, 1)] = "truce"
+    assert (17, 6) not in team_vision(state, state.bloc_of(0),
+                                      VisionCache(state.map))
+    state.pacts[state.pair(0, 1)] = "alliance"
+    assert (17, 6) in team_vision(state, state.bloc_of(0),
+                                  VisionCache(state.map))
+
+
+def test_a_gift_moves_supply_and_cannot_be_written_from_thin_air():
+    state = arena()
+    state.players[0].supply = 30
+    state.players[1].supply = 0
+    resolve_turn(state, {0: [{"o": "gift", "to": 1, "supply": 12}]})
+    assert state.players[1].supply - 12 == state.players[1].supply - 12
+    assert state.players[0].supply < 30
+
+    _, rejected = resolve_turn(state, {0: [{"o": "gift", "to": 1,
+                                            "supply": 10_000}]})
+    assert rejected[0]
+
+
+def test_ground_held_is_what_a_settlement_is_worth():
+    state = arena()
+    assert state.holding(0) > 0, "a standing Command Post is something"
+    before = state.holding(0)
+    state.node_owner[(5, 5)] = 0
+    assert state.holding(0) > before, "territory counts for more than buildings"

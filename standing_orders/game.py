@@ -88,6 +88,8 @@ class Match:
         self.log: list[str] = []
         self.last_timelines: dict[int, dict] = {}
         self.winner_team: int | None = None
+        #: True when the war ended by agreement rather than by annihilation.
+        self.peace = False
         self._next_pid = 0
 
     # -- roster ------------------------------------------------------------
@@ -146,15 +148,33 @@ class Match:
         for player in roster:
             self.state.players[player.pid] = player
         self._reassign_teams()
+        self._seed_pacts()
         self._place_starts()
         self.turn_seq = 0
         self.state.turn = 1
         self.winner_team = None
+        self.peace = False
         self.log.clear()
         self.phase = PHASE_ORDERS
         self.pending = {}
         self._arm_clock()
         self.note(self.state.map.info.name)
+
+    def _seed_pacts(self) -> None:
+        """Turn the starting teams into standing alliances.
+
+        Teams decide who begins the war on whose side and nothing after that.
+        From here it is all agreements, which can be signed and broken.
+        """
+        self.state.pacts.clear()
+        self.state.offers.clear()
+        self.state.breaking.clear()
+        roster = sorted(self.state.players.values(), key=lambda p: p.pid)
+        for index, player in enumerate(roster):
+            for other in roster[index + 1:]:
+                if player.team == other.team:
+                    self.state.pacts[self.state.pair(player.pid, other.pid)] = \
+                        "alliance"
 
     def _place_starts(self) -> None:
         players = sorted(self.state.players.values(), key=lambda p: p.pid)
@@ -243,24 +263,24 @@ class Match:
 
         owner_lookup = {}
         for unit in self.state.units.values():
-            owner_lookup[("move", unit.uid)] = self.state.team_of(unit.owner)
+            owner_lookup[("move", unit.uid)] = self.state.bloc_of(unit.owner)
         for event in result.events:
             actor = event.get("uid")
             kind = event["e"]
             if kind in ("move", "block", "shoot", "spawn", "promote", "heal"):
                 unit = self.state.units.get(actor)
                 if unit is not None:
-                    owner_lookup[(kind, actor)] = self.state.team_of(unit.owner)
+                    owner_lookup[(kind, actor)] = self.state.bloc_of(unit.owner)
             elif kind in ("found", "ready", "strike"):
                 building = self.state.buildings.get(event.get("bid"))
                 if building is not None:
                     owner_lookup[(kind, building.bid)] = \
-                        self.state.team_of(building.owner)
+                        self.state.bloc_of(building.owner)
 
         cache = VisionCache(self.state.map)
         self.last_timelines = {}
         for player in self.state.players.values():
-            team = player.team
+            team = self.state.bloc_of(player.pid)
             per_beat = result.vision.get(team, {})
             events = filter_events(result.events, per_beat, team, player.pid,
                                    owner_lookup)
@@ -310,6 +330,30 @@ class Match:
         return True
 
     def check_over(self) -> bool:
+        """A war ends when one side is left, or when nobody is still fighting.
+
+        The second is the one that makes this a war rather than a deathmatch.
+        Most wars are not fought to the extinction of one side; they stop
+        because everyone still standing has agreed to stop, and whatever the
+        map looks like at that moment is the result.
+        """
+        living = [p for p in self.state.players.values() if p.alive]
+        if self.state.armistice_agreed():
+            self.phase = PHASE_OVER
+            self.peace = True
+            # Peace is a settlement: everyone keeps what they hold, and
+            # whoever holds most has won the war without finishing it.
+            scores = {}
+            for player in living:
+                bloc = self.state.bloc_of(player.pid)
+                scores[bloc] = self.state.bloc_holding(player.pid)
+            self.winner_team = max(scores, key=lambda b: (scores[b], -b))
+            names = ", ".join(sorted(
+                p.name for p in living
+                if self.state.bloc_of(p.pid) == self.winner_team))
+            self.note(f"Armistice. {names} hold the most ground")
+            return True
+
         teams = self.state.living_teams()
         if len(teams) > 1:
             return False
@@ -319,7 +363,8 @@ class Match:
             self.note("Everyone is destroyed. Nobody wins.")
         else:
             names = ", ".join(p.name for p in self.state.players.values()
-                              if p.team == self.winner_team)
+                              if p.alive
+                              and self.state.bloc_of(p.pid) == self.winner_team)
             self.note(f"Victory: {names}")
         return True
 

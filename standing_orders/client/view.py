@@ -20,6 +20,14 @@ class WorldView:
         self.cap: int = 0
         self.army: int = 0
         self.turn: int = 0
+        #: Diplomacy, as the server last reported it. Public knowledge: every
+        #: commander sees who signed what, who is about to tear it up, and who
+        #: is calling for the war to end.
+        self.pacts: dict = {}
+        self.offers: dict = {}
+        self.breaking: set = set()
+        self.armistice: set = set()
+        self.ground: dict = {}
         #: uid -> True when the unit is facing left. Kept outside the unit
         #: dicts because those are rebuilt from scratch every state sync.
         self.facing: dict[int, bool] = {}
@@ -43,10 +51,29 @@ class WorldView:
         self.cap = state.get("cap", self.cap)
         self.army = state.get("army", self.army)
         self.turn = state.get("turn", self.turn)
+        self.pacts = {tuple(pair): pact for pair, pact in state.get("pacts", [])}
+        self.offers = {tuple(pair): pact for pair, pact in state.get("offers", [])}
+        self.breaking = {tuple(pair) for pair in state.get("breaking", [])}
+        self.armistice = set(state.get("armistice", []))
+        self.ground = {int(k): v for k, v in state.get("ground", {}).items()}
         # A remembered unit standing on ground we can now see is simply gone.
         for uid in [u for u, g in self.remembered.items()
                     if (g["x"], g["y"]) in self.visible]:
             del self.remembered[uid]
+
+    # -- diplomacy ---------------------------------------------------------
+    @staticmethod
+    def pair(a: int, b: int) -> tuple:
+        return (a, b) if a <= b else (b, a)
+
+    def pact_with(self, a: int, b: int) -> str:
+        return "alliance" if a == b else self.pacts.get(self.pair(a, b), "war")
+
+    def offer_from(self, sender: int, to: int) -> str | None:
+        return self.offers.get((sender, to))
+
+    def breaking_with(self, a: int, b: int) -> bool:
+        return self.pair(a, b) in self.breaking
 
     def face_left(self, uid: int) -> bool:
         return self.facing.get(uid, False)

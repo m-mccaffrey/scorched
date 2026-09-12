@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from .fog import VisionCache, team_vision
 from .grid import chebyshev, manhattan
+from .resolve import PACT_BINDING
 from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, ARMY_CAP_MAX, BUILDING,
                     HARVEST_RADIUS, UNIT, available_research,
                     cost_of_building, max_rank, promotion_cost)
@@ -39,6 +40,12 @@ class Skill:
     researches: bool      # spends surplus on upgrades
     barracks: int         # production lines it will run at once
     expands: bool         # builds forward depots to grow its cap
+    #: Whether it negotiates at all. A Novice fights everyone until it dies,
+    #: which is a perfectly good beginners' opponent; everyone above it will
+    #: sue for peace when losing and gang up on whoever is running away with
+    #: the war.
+    talks: bool
+
     #: How much of the support game it plays. 0 none at all; 1 raises a Field
     #: Hospital, pulls its wounded back to it and promotes veterans; 2 also
     #: runs an Airfield and calls strikes. Graded rather than a flag because
@@ -48,10 +55,10 @@ class Skill:
 
 
 SKILLS = {
-    "novice": Skill(2, 0.0, False, 1, False, 1, False, 0),
-    "moderate": Skill(4, 0.4, True, 2, True, 2, True, 1),
-    "veteran": Skill(6, 0.85, True, 3, True, 3, True, 2),
-    "cyborg": Skill(7, 1.0, True, 4, True, 3, True, 2),
+    "novice": Skill(2, 0.0, False, 1, False, 1, False, False, 0),
+    "moderate": Skill(4, 0.4, True, 2, True, 2, True, True, 1),
+    "veteran": Skill(6, 0.85, True, 3, True, 3, True, True, 2),
+    "cyborg": Skill(7, 1.0, True, 4, True, 3, True, True, 2),
 }
 SKILL_ORDER = ("novice", "moderate", "veteran", "cyborg")
 
@@ -70,6 +77,23 @@ EXPAND_SURPLUS = 26
 RESEARCH_BUFFER = 20
 
 DEFEND_RADIUS = 7
+
+#: How much stronger somebody has to be before a bot will ask them for terms,
+#: and how much weaker before it considers tearing a pact up. Asymmetric on
+#: purpose: quick to sue for peace, slow to betray. A bot that knifes its ally
+#: the moment it is marginally ahead makes the whole institution worthless,
+#: and nobody signs anything with it twice.
+SUE_FOR_PEACE = 1.5
+BETRAY_MARGIN = 1.6
+
+#: A bot will not break a pact before this turn. Early alliances need room to
+#: mean something, and a first-turn betrayal just reads as a bug.
+BETRAYAL_EARLIEST = 30
+
+#: Nor will it talk at all before this turn. Early on everyone owns four units
+#: and a Command Post, so "who is winning" is one unlucky skirmish of noise --
+#: and bots read that noise as catastrophe and sued for peace on turn eight.
+DIPLOMACY_EARLIEST = 15
 
 #: Supply a bot keeps back before buying into the support game at all. These
 #: are luxuries: an Airfield bought instead of an army loses the match before
@@ -141,6 +165,7 @@ class BotBrain:
                            and b.tile in vision]
 
         orders: list = []
+        orders += self._diplomacy(match, me)
         # Put Engineers on nodes they can already work *before* spending them
         # on construction. Doing it the other way round sends the whole labour
         # force off to build a distant depot while a node beside the Command
@@ -150,6 +175,112 @@ class BotBrain:
         orders += self._economy(match, me, my_buildings, my_units, enemies, busy)
         orders += self._army(match, me, my_units, my_buildings, enemies,
                              enemy_buildings, vision)
+        return orders
+
+    # -- diplomacy ---------------------------------------------------------
+    def _might_of(self, state, pid: int) -> float:
+        """A rough public reckoning of how a commander is doing.
+
+        Units and structures, which anybody watching the standings can count.
+        Bots respect fog everywhere else, and this is the one thing that is
+        genuinely common knowledge at a table: who is winning.
+        """
+        units = sum(UNIT[u.code].cost for u in state.units_of(pid)
+                    if u.code in UNIT)
+        works = sum(1 for b in state.buildings_of(pid) if b.operational)
+        return units + works * 4 + 1.0
+
+    def _diplomacy(self, match, me) -> list:
+        """Sue for peace when losing, gang up on whoever is winning.
+
+        This is the only brake the game has on a runaway leader: in a four-way
+        war, what stops the strongest commander simply staying strongest is the
+        other three noticing.
+
+        Getting it wrong is easy in both directions. Too eager and everyone
+        signs with everyone by turn thirty and the war fizzles into a hundred
+        turns of nobody shooting anybody. Too reluctant and it never fires at
+        all. The rules below were written against both failures.
+        """
+        state = match.state
+        orders: list = []
+        mine = self._might_of(state, me.pid)
+        others = [p for p in state.players.values()
+                  if p.alive and p.pid != me.pid]
+        if not others:
+            return []
+        if state.turn < DIPLOMACY_EARLIEST:
+            return []
+        strongest = max(others, key=lambda p: self._might_of(state, p.pid))
+        at_war = [p for p in others if state.hostile(me.pid, p.pid)]
+        burden = sum(self._might_of(state, p.pid) for p in at_war)
+        weakest = min([mine] + [self._might_of(state, p.pid) for p in others])
+        best_rival_ground = max(
+            (state.bloc_holding(p.pid) for p in others
+             if state.bloc_of(p.pid) != state.bloc_of(me.pid)), default=0)
+
+        # Ending a war is a thing people do, out loud, round a table, so a bot
+        # never opens that conversation while there is still a war on. It will
+        # join one, and it will call for the obvious: when nobody alive is
+        # shooting at anybody, the war has already stopped and somebody should
+        # say so. Without that last clause bot-only matches truced themselves
+        # into a frozen stalemate and ran to the turn limit six times in eight.
+        if me.pid not in state.armistice:
+            ours = state.bloc_holding(me.pid)
+            joining = state.armistice and (ours >= best_rival_ground
+                                           or mine * SUE_FOR_PEACE < burden)
+            if joining or state.everyone_at_peace():
+                orders.append({"o": "armistice"})
+
+        for other in sorted(others, key=lambda p: p.pid):
+            theirs = self._might_of(state, other.pid)
+            pact = state.pact_between(me.pid, other.pid)
+            offered = state.offers.get((other.pid, me.pid))
+
+            # ACCEPTING is not gated on skill. A Novice takes any deal put in
+            # front of it -- which makes it a gentle opponent, and matters more
+            # than it sounds: while one commander refused to talk at all, peace
+            # was unreachable for everybody and two bots who had stopped
+            # fighting each other sat in a stalemate for a hundred turns.
+            if offered is not None:
+                if not SKILLS[self.skill].talks:
+                    orders.append({"o": "accept", "from": other.pid})
+                    continue
+                # Take terms from somebody clearly beating you, or when you
+                # are the weakest left and need the war to get smaller.
+                if theirs > mine * SUE_FOR_PEACE or mine <= weakest:
+                    orders.append({"o": "accept", "from": other.pid})
+                    continue
+
+            if not SKILLS[self.skill].talks:
+                continue
+
+            if pact == "war":
+                # Ask for terms when genuinely losing to this one, or when the
+                # front-runner is beating us and this is a sideshow we cannot
+                # afford. Note the second requires actually being at war with
+                # the leader -- without that clause every bot sued everybody on
+                # turn one and no war ever started.
+                losing = theirs > mine * SUE_FOR_PEACE
+                sideshow = (other.pid != strongest.pid
+                            and state.hostile(me.pid, strongest.pid)
+                            and self._might_of(state, strongest.pid)
+                            > mine * SUE_FOR_PEACE)
+                if (losing or sideshow) and (me.pid, other.pid) not in state.offers:
+                    orders.append({"o": "propose", "to": other.pid,
+                                   "pact": "truce"})
+
+            elif (state.turn >= BETRAYAL_EARLIEST
+                  and state.turn - state.pact_since.get(
+                      state.pair(me.pid, other.pid), state.turn)
+                  >= PACT_BINDING):
+                # A war has to be winnable or it is not a war. Take on a new
+                # enemy only when we could carry the wars we would then have --
+                # so two equals grinding a third do not turn on each other, but
+                # somebody comfortably ahead of a neighbour they are not
+                # fighting eventually does.
+                if mine > (burden + theirs) * BETRAY_MARGIN:
+                    orders.append({"o": "declare", "to": other.pid})
         return orders
 
     # -- engineers ---------------------------------------------------------

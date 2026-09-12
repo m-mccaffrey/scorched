@@ -33,12 +33,22 @@ def test_vision_covers_your_own_units_and_nothing_else():
 
 
 def test_allies_share_vision():
+    """Sight follows the alliance you signed, not the team you were dealt."""
     state = arena()
-    state.players[1].team = 0
     state.add_unit(0, "trooper", 3, 3)
     state.add_unit(1, "trooper", 20, 8)
-    seen = team_vision(state, 0, VisionCache(state.map))
-    assert (3, 3) in seen and (20, 8) in seen
+
+    alone = team_vision(state, state.bloc_of(0), VisionCache(state.map))
+    assert (3, 3) in alone and (20, 8) not in alone
+
+    state.pacts[state.pair(0, 1)] = "alliance"
+    together = team_vision(state, state.bloc_of(0), VisionCache(state.map))
+    assert (3, 3) in together and (20, 8) in together
+
+    state.pacts[state.pair(0, 1)] = "truce"
+    assert (20, 8) not in team_vision(state, state.bloc_of(0),
+                                      VisionCache(state.map)), \
+        "a truce stops the shooting, it does not open your maps"
 
 
 def test_forest_blocks_vision():
