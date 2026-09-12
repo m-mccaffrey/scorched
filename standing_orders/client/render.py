@@ -24,6 +24,11 @@ from ..units import BUILDING, UNIT
 from .sprites import SpriteBank
 
 TILE = 14
+#: Terrain is composited in squares this many tiles on a side, and this many
+#: squares are kept at once. A viewport spans at most four, so panning never
+#: repaints and memory does not care how big the world is.
+PATCH = 32
+PATCH_CACHE = 12
 SCREEN_W, SCREEN_H = 640, 400
 TOP_H = 16
 HUD_H = 44
@@ -151,38 +156,70 @@ class Board:
 class Renderer:
     def __init__(self) -> None:
         self.board: Board | None = None
-        self.terrain = pygame.Surface((1, 1))
         self.fog = pygame.Surface((1, 1), pygame.SRCALPHA)
+        self._patches: dict = {}
+        self._patch_order: list = []
         self._fog_key = None
         self._minimap: pygame.Surface | None = None
+        self._shaded: pygame.Surface | None = None
+        self._shade_key = None
         self.sprites = SpriteBank()
 
     # -- setup -------------------------------------------------------------
     def begin_match(self, tilemap) -> None:
         self.sprites.clear()
         self.board = Board(tilemap)
-        self.terrain = pygame.Surface((self.board.pixel_w,
-                                       self.board.pixel_h)).convert()
-        self._paint_terrain()
-        self.fog = pygame.Surface((self.board.pixel_w, self.board.pixel_h),
-                                  pygame.SRCALPHA)
+        # Terrain is painted a patch at a time, on demand. Compositing a whole
+        # world up front cost 45MB of surface and 435ms on a 224x128 map, and
+        # would have been 257MB on a world four times that -- for a viewport
+        # that can only ever show 32x24 tiles of it. Cost now follows the
+        # window rather than the world.
+        self._patches: dict = {}
+        self._patch_order: list = []
+        self.fog = pygame.Surface((BOARD_W, BOARD_H), pygame.SRCALPHA)
         self._fog_key = None
         self._minimap = None
+        self._shaded = None
+        self._shade_key = None
 
-    def _paint_terrain(self) -> None:
-        """Composite the whole board once.
+    # -- terrain patches ----------------------------------------------------
+    def _patch(self, px: int, py: int) -> pygame.Surface:
+        """One PATCH x PATCH square of terrain, painted once and kept."""
+        key = (px, py)
+        got = self._patches.get(key)
+        if got is None:
+            got = pygame.Surface((PATCH * TILE, PATCH * TILE)).convert()
+            got.fill(UI_BG)
+            self._paint_terrain(got, px * PATCH, py * PATCH, PATCH, PATCH)
+            self._patches[key] = got
+            self._patch_order.append(key)
+            # A hard ceiling on how much terrain is held at once. Twelve
+            # patches is comfortably more than the four a viewport can span,
+            # so panning back and forth never repaints, and the bill is the
+            # same on the largest world as on the smallest.
+            while len(self._patch_order) > PATCH_CACHE:
+                self._patches.pop(self._patch_order.pop(0), None)
+        return got
 
-        Terrain never changes in this game, so every tile can afford a little
-        hand-placed detail -- tufts, ripples, rock facets -- picked from a hash
-        of its coordinates. The variation is what stops a big grid of flat
-        squares reading as a spreadsheet, and it costs nothing per frame.
+    def _paint_terrain(self, surface, x0: int = 0, y0: int = 0,
+                       width: int = 0, height: int = 0) -> None:
+        """Composite a rectangle of tiles into a surface.
+
+        Terrain never changes, so every tile can afford a little hand-placed
+        detail -- tufts, ripples, rock facets -- picked from a hash of its
+        coordinates. The variation is what stops a big grid of flat squares
+        reading as a spreadsheet, and it costs nothing per frame.
+
+        Painted a patch at a time rather than all at once: a whole world is far
+        too much surface to hold, and almost none of it is on screen.
         """
         tilemap = self.board.map
-        surface = self.terrain
-        for y in range(tilemap.height):
-            for x in range(tilemap.width):
+        width = width or tilemap.width
+        height = height or tilemap.height
+        for y in range(y0, min(tilemap.height, y0 + height)):
+            for x in range(x0, min(tilemap.width, x0 + width)):
                 char = tilemap.at(x, y)
-                rect = pygame.Rect(x * TILE, y * TILE, TILE, TILE)
+                rect = pygame.Rect((x - x0) * TILE, (y - y0) * TILE, TILE, TILE)
                 noise = _tile_hash(x, y)
                 if char == ROCK:
                     self._paint_rock(surface, rect, noise)
@@ -254,21 +291,33 @@ class Renderer:
 
     # -- fog ---------------------------------------------------------------
     def set_fog(self, visible: set, explored: set | None = None) -> None:
-        """Rebuild the shroud, skipping the work when nothing has changed."""
+        """Rebuild the shroud over the viewport, and only when it has moved.
+
+        The shroud used to cover the whole board, which on a world meant
+        iterating forty thousand tiles to shade the seven hundred anyone could
+        see. It is now the size of the window, and the camera position is part
+        of what makes it stale.
+        """
+        board = self.board
         explored = explored if explored is not None else visible
-        key = (len(visible), len(explored))
+        key = (len(visible), len(explored), board.cam_x, board.cam_y)
         if self._fog_key == key:
             return
         self._fog_key = key
         self.fog.fill((0, 0, 0, 0))
-        tilemap = self.board.map
-        for y in range(tilemap.height):
-            for x in range(tilemap.width):
+        # Tile range the window covers, padded by one so a part-tile at the
+        # edge is still shaded.
+        left = max(0, (board.cam_x - board.pad_x) // TILE)
+        top = max(0, (board.cam_y - board.pad_y) // TILE)
+        for y in range(top, min(board.map.height, top + BOARD_H // TILE + 2)):
+            for x in range(left, min(board.map.width, left + BOARD_W // TILE + 2)):
                 tile = (x, y)
                 if tile in visible:
                     continue
                 alpha = FOG_SEEN_ALPHA if tile in explored else FOG_UNKNOWN_ALPHA
-                self.fog.fill((6, 8, 14, alpha), (x * TILE, y * TILE, TILE, TILE))
+                self.fog.fill((6, 8, 14, alpha),
+                              (board.ox + x * TILE - Board.VIEW.x,
+                               board.oy + y * TILE - Board.VIEW.y, TILE, TILE))
 
     # -- world -------------------------------------------------------------
     # -- minimap -----------------------------------------------------------
@@ -289,9 +338,35 @@ class Renderer:
             self._minimap = surface
         return self._minimap
 
+    def _minimap_shaded(self, rect, explored) -> pygame.Surface:
+        """The minimap's terrain with the unexplored blacked out, cached.
+
+        Rebuilt only when you have scouted more ground, and built by painting
+        the ground you *have* seen onto a dark surface rather than by blacking
+        out the ground you have not -- so it costs what you have explored
+        rather than the size of the world.
+
+        Doing it the other way round, every frame, cost 159ms a frame on a
+        98,000-tile continent: ten frames a second, all of it spent shading
+        ground nobody has ever been to.
+        """
+        key = (rect.size, len(explored), id(self._minimap))
+        if self._shade_key == key:
+            return self._shaded
+        base = self.minimap_base()
+        small = pygame.Surface(base.get_size()).convert()
+        small.fill((8, 10, 16))
+        width, height = base.get_size()
+        for (x, y) in explored:
+            if 0 <= x < width and 0 <= y < height:
+                small.set_at((x, y), base.get_at((x, y)))
+        self._shaded = pygame.transform.scale(small, rect.size)
+        self._shade_key = key
+        return self._shaded
+
     def draw_minimap(self, dest: pygame.Surface, rect: pygame.Rect,
                      view, colors: dict, my_pid: int) -> None:
-        """The whole map at a glance: terrain, fog, everyone, and the camera.
+        """The whole world at a glance: ground, everyone on it, and the camera.
 
         Deliberately not a second battlefield -- a unit is one dot and there is
         no detail to read. Its job is "where is my army, where is the fighting,
@@ -308,22 +383,11 @@ class Renderer:
 
         pygame.draw.rect(dest, UI_PANEL_LO, rect.inflate(4, 4))
         pygame.draw.rect(dest, UI_PANEL_HI, rect.inflate(4, 4), 1)
-        dest.blit(pygame.transform.scale(self.minimap_base(), rect.size),
-                  rect.topleft)
+        dest.blit(self._minimap_shaded(rect, view.explored), rect.topleft)
 
-        # Ground never scouted is blacked out. Ground seen and since lost is
-        # left as it is -- at this size a second shade of dim is noise rather
-        # than information.
-        explored = view.explored
         step_x, step_y = max(1, int(sx) + 1), max(1, int(sy) + 1)
-        if explored:
-            for y in range(tilemap.height):
-                for x in range(tilemap.width):
-                    if (x, y) not in explored:
-                        dest.fill((8, 10, 16), (*at(x, y), step_x, step_y))
-
         for tile in tilemap.nodes:
-            if tile not in explored:
+            if tile not in view.explored:
                 continue
             owner = view.node_owner.get(tile)
             colour = C_NODE if owner is None else team_color(colors.get(owner, 0))
@@ -346,25 +410,23 @@ class Renderer:
                                 max(3, int(window.height * sy)))
             pygame.draw.rect(dest, UI_ACCENT, frame.clip(rect), 1)
 
-    def _camera_blit(self, dest: pygame.Surface, source: pygame.Surface) -> None:
-        """Blit only the part of a board-sized surface the camera can see.
-
-        On the largest maps the terrain is 896x588 and the viewport is 448x340,
-        so blitting the whole thing would push four times the pixels needed
-        every frame. That is exactly the sort of waste a Pi 400 notices.
-        """
-        board = self.board
-        window = pygame.Rect(board.cam_x, board.cam_y, BOARD_W, BOARD_H)
-        window = window.clip(pygame.Rect(0, 0, board.pixel_w, board.pixel_h))
-        if window.width and window.height:
-            dest.blit(source, (board.ox + window.x, board.oy + window.y), window)
-
     def draw_terrain(self, dest: pygame.Surface) -> None:
         dest.fill(UI_BG)
-        self._camera_blit(dest, self.terrain)
+        board = self.board
+        span = PATCH * TILE
+        first_x = max(0, board.cam_x // span)
+        first_y = max(0, board.cam_y // span)
+        last_x = (board.cam_x + BOARD_W) // span
+        last_y = (board.cam_y + BOARD_H) // span
+        wide = -(-board.map.width // PATCH)
+        tall = -(-board.map.height // PATCH)
+        for py in range(first_y, min(tall - 1, last_y) + 1):
+            for px in range(first_x, min(wide - 1, last_x) + 1):
+                dest.blit(self._patch(px, py),
+                          (board.ox + px * span, board.oy + py * span))
 
     def draw_fog(self, dest: pygame.Surface) -> None:
-        self._camera_blit(dest, self.fog)
+        dest.blit(self.fog, Board.VIEW.topleft)
 
     def draw_nodes(self, dest: pygame.Surface, node_owner: dict,
                    colors: dict) -> None:

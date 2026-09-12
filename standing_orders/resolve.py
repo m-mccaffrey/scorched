@@ -121,33 +121,35 @@ def static_obstacles(occupancy: dict) -> set:
             if kind == "building"}
 
 
-#: How far ahead a unit plans, in tiles.
+#: How much searching a unit may do to plan its next leg.
 #:
-#: A* explores roughly the square of the distance, so a march across a 224x128
-#: world was costing 9ms a call and made up 80% of a turn. A unit does not need
-#: the whole route before it can start walking: it plans to the horizon, walks,
-#: and plans again, exactly as its ``goal`` and reroute machinery already allow.
-#: Beyond a horizon this far away the terrain is unscouted guesswork anyway.
-PLAN_HORIZON = 28
+#: A* explores roughly the square of the distance, so planning a whole march
+#: across a world cost 9ms a call and was 80% of a turn. The first fix guessed
+#: a waypoint thirty tiles along the straight line -- which works beautifully
+#: until the map has an inland sea in the middle, where the guess lands in the
+#: water, the search fails, and every unit falls back to the full-world path it
+#: was supposed to avoid. On a 384x256 continent that put turns at 770ms.
+#:
+#: A budget does the same job without being able to guess wrong: search this
+#: far and walk to whatever got closest. It costs a bounded amount on any
+#: terrain, and a unit always makes progress toward where it was sent.
+PLAN_BUDGET = 900
 
 
-def horizon_between(start, goal) -> tuple:
-    """A waypoint on the way to ``goal``, no further off than the horizon."""
-    dx, dy = goal[0] - start[0], goal[1] - start[1]
-    span = max(abs(dx), abs(dy))
-    if span <= PLAN_HORIZON:
-        return goal
-    return (start[0] + dx * PLAN_HORIZON // span,
-            start[1] + dy * PLAN_HORIZON // span)
-
-
-def path_toward(tilemap, start, goal, blocked) -> list:
+def path_toward(tilemap, start, goal, blocked, limit: int = PLAN_BUDGET) -> list:
     """Path to ``goal``, or failing that to the closest tile beside it.
 
     Attack-move at an enemy names a tile that is by definition occupied, so
     "get next to it" is what the player actually meant.
+
+    Every search here is budgeted, and that matters more than it looks. A
+    search that *fails* explores everything it can reach before admitting it,
+    and this routine can try nine of them -- the goal and its eight
+    neighbours. On a 98,000-tile continent an unreachable target therefore
+    cost nine near-complete sweeps of the world, which is what put the worst
+    turn at 1.9 seconds.
     """
-    path = find_path(tilemap, start, goal, blocked)
+    path = find_path(tilemap, start, goal, blocked, limit=limit)
     if path or start == goal:
         return path
     options = []
@@ -159,7 +161,7 @@ def path_toward(tilemap, start, goal, blocked) -> list:
             options.append(neighbour)
     options.sort(key=lambda t: (abs(t[0] - start[0]) + abs(t[1] - start[1]), t))
     for option in options:
-        path = find_path(tilemap, start, option, blocked)
+        path = find_path(tilemap, start, option, blocked, limit=limit)
         if path:
             return path
     return []
@@ -231,22 +233,49 @@ def apply_orders(state: MatchState, orders: dict, result: TurnResult,
     return rejected
 
 
+def _approach(tilemap, start, goal, blocked):
+    """The tile to actually walk to: ``goal``, or the best tile beside it.
+
+    Attack-move at an enemy names a tile that is by definition occupied, so
+    "get next to it" is what the player meant. Resolving that *before*
+    searching matters enormously: the alternative is to search for the goal,
+    fail, and then search for each of eight neighbours in turn. On a continent
+    that was six hundred failed searches a turn and 98% of the cost of a turn,
+    because a failed search explores everything it can reach before admitting
+    defeat.
+    """
+    if goal not in blocked and tilemap.passable(*goal):
+        return goal
+    options = []
+    for dx, dy in NEIGHBOURS:
+        beside = (goal[0] + dx, goal[1] + dy)
+        if beside == start:
+            return start                     # already there; stand still
+        if tilemap.passable(*beside) and beside not in blocked:
+            options.append(beside)
+    if not options:
+        return None
+    return min(options, key=lambda t: (abs(t[0] - start[0])
+                                       + abs(t[1] - start[1]), t))
+
+
 def _route(tilemap, start, goal, blocked, routes: dict) -> list:
-    """``path_toward``, capped at the planning horizon and memoised for the turn.
+    """The next leg toward ``goal``, memoised for the turn.
 
     Paths are returned as copies, because a unit pops tiles off its own path as
-    it walks. A distant goal is planned only as far as the horizon; the unit
-    keeps the real goal and plans the next leg when it runs out of road.
+    it walks. A distant goal is searched only as far as the budget allows and
+    the unit walks to whatever came closest; it keeps the real goal and plans
+    the next leg when it runs out of road. One search, always.
     """
-    waypoint = horizon_between(start, goal)
-    key = (start, waypoint)
+    key = (start, goal)
     path = routes.get(key)
     if path is None:
-        path = path_toward(tilemap, start, waypoint, blocked)
-        if not path and waypoint != goal:
-            # The horizon landed somewhere unreachable -- a lake, a cliff.
-            # Fall back to planning the whole way rather than refusing to move.
-            path = path_toward(tilemap, start, goal, blocked)
+        target = _approach(tilemap, start, goal, blocked)
+        if target is None or target == start:
+            path = []
+        else:
+            path = find_path(tilemap, start, target, blocked,
+                             limit=PLAN_BUDGET, partial=True)
         routes[key] = path
     return list(path)
 
@@ -706,7 +735,10 @@ class Resolver:
         # units standing in the way genuinely do count.
         blocked = set(self.occupancy) - {unit.tile}
         goal = unit.goal
-        path = path_toward(self.state.map, unit.tile, goal, blocked)
+        target = _approach(self.state.map, unit.tile, goal, blocked)
+        path = [] if target in (None, unit.tile) else find_path(
+            self.state.map, unit.tile, target, blocked,
+            limit=PLAN_BUDGET, partial=True)
         if unit.job is not None and path:
             path = path[:-1]
         if not path:

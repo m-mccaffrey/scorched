@@ -1014,13 +1014,11 @@ def test_pace_leaves_the_movement_arithmetic_whole():
 def test_a_unit_crosses_a_world_one_leg_at_a_time():
     """Units plan only as far as the horizon, so a long march is a series of
     legs. The unit keeps its real goal and must still arrive."""
-    from standing_orders.resolve import PLAN_HORIZON
-    width = PLAN_HORIZON * 4
+    width = 160
     state = paced_arena(1, width=width, height=9)
     scout = state.add_unit(0, "scout", 2, 4)
     goal = (width - 3, 4)
     resolve_turn(state, {0: [{"o": "move", "uid": scout.uid, "to": list(goal)}]})
-    assert len(scout.path) <= PLAN_HORIZON + 1, "planned past the horizon"
 
     for _ in range(width * 2):
         if scout.tile == goal:
@@ -1032,17 +1030,17 @@ def test_a_unit_crosses_a_world_one_leg_at_a_time():
 def test_a_march_does_not_restart_when_the_horizon_is_reached():
     """Running out of road must not clear the order -- that was the bug that
     made a scout stop after one turn, in a different disguise."""
-    from standing_orders.resolve import PLAN_HORIZON
-    state = paced_arena(1, width=PLAN_HORIZON * 3, height=9)
+    state = paced_arena(1, width=120, height=9)
     unit = state.add_unit(0, "trooper", 2, 4)
-    goal = (PLAN_HORIZON * 3 - 3, 4)
+    goal = (117, 4)
     resolve_turn(state, {0: [{"o": "move", "uid": unit.uid, "to": list(goal)}]})
-    for _ in range(40):
+    for _ in range(160):
         resolve_turn(state, {})
         if unit.tile == goal:
             break
         assert unit.goal == goal, "the unit forgot where it was going"
         assert unit.path or unit.tile == goal, "the unit ran out of road"
+    assert unit.tile == goal
 
 
 def test_the_pathfinder_cap_scales_with_the_board():
@@ -1159,3 +1157,63 @@ def test_ground_held_is_what_a_settlement_is_worth():
     before = state.holding(0)
     state.node_owner[(5, 5)] = 0
     assert state.holding(0) > before, "territory counts for more than buildings"
+
+
+def test_marching_on_an_occupied_tile_costs_one_search_not_nine():
+    """Attack-move names a tile with something standing on it, so the route
+    has to be to a tile *beside* it. Working that out before searching rather
+    than after is the difference between one search and nine failed ones --
+    which on a 98,000-tile continent was 98% of the cost of a turn."""
+    import standing_orders.grid as grid_module
+    from standing_orders.resolve import _approach
+
+    state = arena(width=60, height=12)
+    target = state.buildings[min(state.buildings)]
+    unit = state.add_unit(0, "trooper", 40, 5)
+    blocked = {b.tile for b in state.buildings.values()}
+
+    beside = _approach(state.map, unit.tile, target.tile, blocked)
+    assert beside is not None and beside != target.tile
+    assert max(abs(beside[0] - target.tile[0]),
+               abs(beside[1] - target.tile[1])) == 1
+
+    calls = []
+    real = grid_module.find_path
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    grid_module.find_path = counted
+    import standing_orders.resolve as resolve_module
+    resolve_module.find_path = counted
+    try:
+        resolve_turn(state, {0: [{"o": "attack", "uid": unit.uid,
+                                  "to": list(target.tile)}]})
+    finally:
+        grid_module.find_path = real
+        resolve_module.find_path = real
+    assert len(calls) <= 2, f"{len(calls)} searches for one order"
+    assert unit.path, "and the unit still set off"
+
+
+def test_a_unit_crosses_a_continent():
+    """The end-to-end version: the largest shipped world, corner to corner."""
+    from standing_orders.game import load_map
+    from standing_orders.state import MatchState, Player
+
+    world = load_map("reach")
+    state = MatchState(world)
+    for pid in (0, 1):
+        state.players[pid] = Player(pid=pid, name=str(pid), team=pid,
+                                    color=pid, supply=50)
+        state.add_building(pid, "base", *world.spawns[pid + 1])
+    start, goal = world.spawns[1], world.spawns[4]
+    scout = state.add_unit(0, "scout", start[0] + 3, start[1])
+    resolve_turn(state, {0: [{"o": "move", "uid": scout.uid,
+                              "to": list(goal)}]}, vision=False)
+    for _ in range(400):
+        if scout.tile == goal or scout.goal is None:
+            break
+        resolve_turn(state, {}, vision=False)
+    assert scout.tile == goal, f"stalled at {scout.tile}"

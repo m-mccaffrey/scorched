@@ -308,6 +308,31 @@ Engineer) and Engineering (structures finish a turn sooner, Barricades cost 1).
 Its real job is to give a healthy economy somewhere to spend once quantity is
 capped.
 
+**Worlds go to 512x256.** *The Reach* is 384x256 — 98,304 tiles, a hundred
+and forty-six times the first map this game ever loaded — a continent around an
+inland sea with four nations on its rim.
+
+Neither side of the game pays for the acreage:
+
+| map | tiles | server, ms a turn | client, ms a frame | terrain held |
+|---|---|---|---|---|
+| Cross Duel | 672 | 10 | 1.2 | 9.6 MB |
+| Long Valley | 2,816 | 21 | 1.2 | 9.6 MB |
+| The Wide World | 28,672 | 63 | 3.0 | 9.6 MB |
+| The Reach | 98,304 | 109 | 3.6 | 9.6 MB |
+
+The client used to composite the whole terrain and the whole shroud up front:
+45MB and 435ms before the first frame on a 224x128 world, and it would have
+been 257MB on The Reach. Terrain is now painted in patches around the camera
+and the shroud is the size of the window, so the client's bill follows the
+window rather than the world and is identical at every size.
+
+There is a joke in here. Simulating only the regions where something is
+happening was tried and removed, because turn cost tracks armies rather than
+acreage — but *drawing* only the part of the world on screen is the whole
+ballgame, because drawing cost tracks acreage exactly. Chunks were the right
+idea in the wrong half of the program.
+
 **One world, one clock.** The largest maps are *worlds* rather than
 battlefields — The Wide World is 224x128, forty times the area of the original
 maps, with four nations in the corners. There is no separate campaign layer and
@@ -585,7 +610,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 301 tests
+python3 -m pytest          # 307 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

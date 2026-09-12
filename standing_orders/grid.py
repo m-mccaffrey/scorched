@@ -35,19 +35,23 @@ COST_FOREST = 192
 #: The largest map the game will load.
 #:
 #: This began at 32x24, the exact size the board viewport can show, with an
-#: error that said "exceeds what the screen can show without scrolling". Then
-#: the client learned to scroll and it became a question of play and memory
-#: rather than pixels.
+#: error that read "exceeds what the screen can show without scrolling". Then
+#: the client learned to scroll, and then maps became *worlds*: several
+#: territories under one clock, simulated whole every turn.
 #:
-#: It is now a *world* rather than a battlefield: several territories on one
-#: map, with one clock over all of them, simulated only where something is
-#: happening. The ceiling is what a Pi 400 can hold -- the client keeps a
-#: pre-composited terrain surface and a fog surface, both 14 bytes-ish a tile,
-#: so 256x160 is about 40,000 tiles and roughly 45MB of surfaces. Past that
-#: the client has to composite terrain per region too, which is work nobody
-#: has needed yet.
-MAX_W = 256
-MAX_H = 160
+#: The ceiling used to be the client's memory. It pre-composited the entire
+#: terrain and the entire shroud, which on a 224x128 world was 45MB of surface
+#: and 435ms of painting before the first frame, and would have been 257MB at
+#: this size. Terrain is now painted in patches around the camera and the
+#: shroud is the size of the window, so the client's bill follows the window
+#: rather than the world and is the same here as on a duel map.
+#:
+#: What is left scaling with area is the map itself -- a passability table of
+#: a couple of hundred thousand entries, and a file of the same order to hand
+#: to a joining client. Both are fine. 512x320 is 164,000 tiles, roughly two
+#: hundred and forty times the first map this game ever loaded.
+MAX_W = 512
+MAX_H = 320
 
 _PASSABLE = set(OPEN + FOREST + NODE + SPAWNS)
 _BLOCKS_SIGHT = {ROCK, FOREST}
@@ -266,7 +270,8 @@ class TileMap:
 # ---------------------------------------------------------------------------
 
 def find_path(tilemap: TileMap, start: tuple[int, int], goal: tuple[int, int],
-              blocked: set | None = None, limit: int = 0) -> list:
+              blocked: set | None = None, limit: int = 0,
+              partial: bool = False) -> list:
     """A* from ``start`` to ``goal``, returning the tiles after ``start``.
 
     ``blocked`` holds tiles occupied by other units and buildings. They are
@@ -278,6 +283,12 @@ def find_path(tilemap: TileMap, start: tuple[int, int], goal: tuple[int, int],
     reachable tile is *not* attempted: a unit that cannot get there should sit
     still and let the player see that, rather than wandering somewhere they
     did not ask for.
+
+    With ``partial``, running out of budget is not a failure: the search
+    returns the route to whichever tile it reached that got closest to the
+    goal. That is what makes a long march affordable -- walk that far, look
+    up, search again -- and unlike guessing a waypoint on the straight line it
+    cannot be defeated by an inland sea sitting exactly where the guess lands.
     """
     if start == goal or not tilemap.passable(*goal):
         return []
@@ -304,6 +315,7 @@ def find_path(tilemap: TileMap, start: tuple[int, int], goal: tuple[int, int],
     came: dict = {start: None}
     best: dict = {start: 0}
     seen = 0
+    nearest, nearest_h = start, start_h
 
     while open_heap:
         _, spent, current = pop(open_heap)
@@ -311,8 +323,14 @@ def find_path(tilemap: TileMap, start: tuple[int, int], goal: tuple[int, int],
             break
         if spent > best.get(current, far):
             continue
+        reach = (abs(current[0] - goal_x) + abs(current[1] - goal_y)) * COST_OPEN
+        if reach < nearest_h:
+            nearest, nearest_h = current, reach
         seen += 1
         if seen > limit:
+            if partial and nearest != start:
+                goal = nearest
+                break
             return []
         cx, cy = current
         for dx, dy in NEIGHBOURS:

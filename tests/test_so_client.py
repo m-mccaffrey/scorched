@@ -11,6 +11,7 @@ import pygame
 import pytest
 
 from standing_orders.game import Settings
+from standing_orders.client.render import SCREEN_H, SCREEN_W
 from standing_orders.units import AIRSTRIKE_COST, UNIT, promotion_cost
 
 
@@ -323,3 +324,42 @@ def test_a_gift_is_costed_against_the_turn_budget(app):
     app._queue_diplomacy(["gift", other])
     assert len(app.queued) == 1, "a second gift you cannot afford is refused"
     app.queued.clear()
+
+
+def test_the_client_pays_for_the_window_not_for_the_world():
+    """Terrain used to be composited whole -- 45MB and 435ms before the first
+    frame on a 224x128 world, and 257MB on the largest one. It is painted in
+    patches around the camera now, so the bill is the same at every size."""
+    from standing_orders.client.render import PATCH_CACHE, Renderer
+    from standing_orders.game import load_map
+
+    held = {}
+    for name in ("duel", "reach"):
+        renderer = Renderer()
+        renderer.begin_match(load_map(name))
+        assert not renderer._patches, \
+            f"{name}: begin_match painted terrain nobody has looked at yet"
+        surface = pygame.Surface((SCREEN_W, SCREEN_H))
+        for _ in range(60):
+            renderer.board.scroll_by(37, 23)
+            renderer.draw_terrain(surface)
+        held[name] = len(renderer._patches)
+
+    assert held["reach"] <= PATCH_CACHE, "the patch cache is not capped"
+    assert held["reach"] <= held["duel"] + PATCH_CACHE
+
+
+def test_the_shroud_follows_the_camera():
+    """The shroud is window-sized now, so moving the camera makes it stale in
+    exactly the way changing what you can see does."""
+    from standing_orders.client.render import Renderer
+    from standing_orders.game import load_map
+
+    renderer = Renderer()
+    renderer.begin_match(load_map("reach"))
+    visible = {(x, y) for x in range(20, 40) for y in range(20, 40)}
+    renderer.set_fog(visible, visible)
+    first = renderer._fog_key
+    renderer.board.scroll_by(400, 300)
+    renderer.set_fog(visible, visible)
+    assert renderer._fog_key != first, "the shroud did not notice the camera"

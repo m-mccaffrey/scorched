@@ -172,3 +172,46 @@ def test_every_shipped_map_is_fully_connected():
             assert tilemap.passable(*node), f"{name}: node {node} is unwalkable"
             assert find_path(tilemap, first, node, set()), \
                 f"{name}: node {node} is unreachable"
+
+
+def test_a_budgeted_search_returns_the_best_it_reached():
+    """A long march is searched a leg at a time. Running out of budget must
+    yield progress toward the goal, not a refusal -- guessing a waypoint on
+    the straight line instead was defeated by any map with a lake in it."""
+    from standing_orders.grid import find_path
+    rows = ["." * 120 for _ in range(9)]
+    rows[0] = "1" + rows[0][1:]
+    rows[-1] = rows[-1][:-1] + "2"
+    wide = TileMap.parse("\n".join(rows))
+
+    full = find_path(wide, (2, 4), (117, 4), set())
+    assert len(full) == 115
+
+    # A* on open ground is efficient enough that a corridor this long costs
+    # barely more nodes than it has tiles, so the budget has to be small
+    # before it bites at all -- which is itself worth knowing.
+    assert find_path(wide, (2, 4), (117, 4), set(), limit=20) == [], \
+        "without partial, running out of budget is a refusal"
+
+    leg = find_path(wide, (2, 4), (117, 4), set(), limit=20, partial=True)
+    assert leg, "a budgeted search must still go somewhere"
+    assert len(leg) < len(full), "and it is only a leg"
+    assert leg[-1][0] > 2, "pointed at the goal, not away from it"
+
+
+def test_a_partial_search_is_not_defeated_by_an_obstacle_in_the_way():
+    """The failure that put a 384x256 continent at 770ms a turn: the straight
+    line toward the goal ran into water, so every unit fell back to a full
+    search of the world."""
+    from standing_orders.grid import find_path
+    rows = ["." * 60 for _ in range(21)]
+    # A lake squarely between start and goal, with shores top and bottom.
+    for y in range(4, 17):
+        rows[y] = rows[y][:20] + "~" * 20 + rows[y][40:]
+    rows[0] = "1" + rows[0][1:]
+    rows[-1] = rows[-1][:-1] + "2"
+    lake = TileMap.parse("\n".join(rows))
+
+    leg = find_path(lake, (2, 10), (57, 10), set(), limit=400, partial=True)
+    assert leg, "a unit must still set off around a lake"
+    assert all(lake.passable(*tile) for tile in leg)

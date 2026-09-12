@@ -1364,9 +1364,13 @@ class App:
         self.renderer.draw_terrain(self.screen)
         self.renderer.draw_nodes(self.screen, self.view.node_owner, self.colors)
         self._draw_entities()
+        # The shroud is the size of the window now, not of the world, so
+        # moving the camera makes it stale exactly as changing what you can
+        # see does. Rebuilding is a no-op when neither has moved.
+        visible = self.view.visible
         if self.replay is not None:
-            visible = self.view.visible | self.replay.extra_visible()
-            self.renderer.set_fog(visible, self.view.explored | visible)
+            visible = visible | self.replay.extra_visible()
+        self.renderer.set_fog(visible, self.view.explored | visible)
         self.renderer.draw_fog(self.screen)
         self._draw_entities_over_fog()
         if self.replay is not None:
