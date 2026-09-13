@@ -244,6 +244,17 @@ nobody working it is outlined in red and marked with a `!`:
 | Airfield | 14 | 3 turns | 45 | Calls one airstrike a turn |
 | Barricade | 2 | 1 turn | 30 | Blocks the way |
 
+**Cost scales with the square of the army, not with the map.** Doubling the
+units on the board costs about 3.6x a turn, because picking a target is the one
+genuinely quadratic thing in the game — every unit considers every other, three
+times a turn. Measured on The Reach: 80 units 24ms, 160 units 72ms, 320 units
+263ms, 640 units 820ms.
+
+Raising the army cap is therefore the expensive knob, and it is also the one
+that stops mattering: bots cannot build enough Supply Depots to exceed about
+200 units between four of them, so a ceiling above 60 changes nothing at all.
+Going 40 to 60 buys roughly 40% more army for roughly 20% more time a turn.
+
 **The army cap starts at 12 and grows by 4 per Supply Depot, to 40.** Engineers
 count against it, so every worker is one fewer soldier — that tension is what
 makes the economy a decision rather than free money. And because depots raise
@@ -644,7 +655,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 309 tests
+python3 -m pytest          # 311 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

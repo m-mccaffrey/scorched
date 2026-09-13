@@ -1255,3 +1255,35 @@ def test_an_engineer_gives_up_on_a_site_it_cannot_reach():
         resolve_turn(state, {})
     assert worker.job is None, "the Engineer is still walking to nowhere"
     assert state.players[0].supply >= before - 2, "and never got its money back"
+
+
+def test_the_hostility_cache_notices_a_pact_signed_this_turn():
+    """Who shoots whom is settled once a turn for speed. It has to be settled
+    *after* this turn's diplomacy, or a truce signed at the top of a turn
+    would not stop the guns until the next one."""
+    state = arena()
+    a = state.add_unit(0, "trooper", 5, 5)
+    b = state.add_unit(1, "trooper", 6, 5)
+    resolve_turn(state, {0: [{"o": "propose", "to": 1, "pact": "truce"}]})
+    hurt = (a.hp, b.hp)
+    assert hurt[0] < a.max_hp, "an offer alone does not stop a war"
+
+    # Signed and effective within the same turn's resolution.
+    resolve_turn(state, {1: [{"o": "accept", "from": 0}]})
+    assert (a.hp, b.hp) == hurt, "the truce did not bite until the next turn"
+
+
+def test_a_declaration_is_not_shooting_until_it_bites():
+    """The other direction: the cache must not let a declaration made at the
+    top of a turn start the shooting in that same turn."""
+    from standing_orders.resolve import PACT_BINDING
+    state = arena()
+    state.pacts[state.pair(0, 1)] = "truce"
+    state.pact_since[state.pair(0, 1)] = 0
+    state.turn = PACT_BINDING + 1
+    a = state.add_unit(0, "trooper", 5, 5)
+    b = state.add_unit(1, "trooper", 6, 5)
+    resolve_turn(state, {0: [{"o": "declare", "to": 1}]})
+    assert (a.hp, b.hp) == (a.max_hp, b.max_hp)
+    resolve_turn(state, {})
+    assert a.hp < a.max_hp
