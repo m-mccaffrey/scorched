@@ -451,8 +451,12 @@ def test_a_long_war_starts_looking_for_terms():
     from standing_orders.ai import WAR_WEARY
     import random as _random
 
-    match = started(4, teams=True)
+    # A four-spawn map, or this is not the situation the docstring describes:
+    # the default map seats two, so started(4) leaves half the roster dead on
+    # arrival and the "2v2" was a duel with spectators.
+    match = started(4, teams=True, map_name="crossroads")
     state = match.state
+    assert sum(1 for p in state.players.values() if p.alive) == 4
     brain = BotBrain("veteran", _random.Random(1))
 
     state.turn = WAR_WEARY - 1
@@ -481,3 +485,178 @@ def test_the_lobby_army_cap_governs_what_a_player_can_field():
     assert Settings(army_cap=1).clamp().army_cap == ARMY_CAP_FLOOR
     assert Settings(army_cap=999).clamp().army_cap == ARMY_CAP_ROOF
     assert Settings().army_cap == 60
+
+
+def test_a_bot_never_bricks_itself_in():
+    """The bug behind "the AI doesn't seem to want to win".
+
+    Sites were picked by closeness to the Command Post and nothing else, and
+    movement in this game is four-directional, so twenty structures around a
+    base is a wall. Measured on a duel at turn 150: a Veteran with eleven
+    Depots, six Barracks and an army of sixty had *every one* of its thirty-five
+    fighters with no route to the enemy, ordered to attack every turn, penned
+    inside its own yard -- and the enemy Command Post finished the match at full
+    health.
+    """
+    from standing_orders.ai import BotBrain
+    from standing_orders.grid import find_path
+    from standing_orders.resolve import static_obstacles
+
+    match = started(2, map_name="basin")
+    state = match.state
+    brain = BotBrain("veteran", random.Random(5))
+    base = next(b for b in state.buildings_of(0) if b.code == "base")
+    far = max(state.map.nodes, key=lambda t: abs(t[0] - base.x) + abs(t[1] - base.y))
+
+    # Build out the yard the way a rich bot does: twenty structures, each on
+    # the site the bot itself would choose next.
+    placed = 0
+    for _ in range(20):
+        site = brain._site_near(state, base.tile, radius=4)
+        if site is None:
+            break
+        state.add_building(0, "depot", site[0], site[1])
+        placed += 1
+        walls = static_obstacles(state.occupancy())
+        assert find_path(state.map, base.tile, far, walls, partial=False), \
+            f"the yard sealed itself after {placed} buildings at {site}"
+    assert placed >= 12, f"only found room for {placed} buildings"
+
+
+def test_a_yard_full_of_engineers_is_not_a_sealed_yard():
+    """The escape test counts structures and terrain, never bodies. Counting
+    units meant a yard with somebody standing in each gap read as sealed for
+    good: every candidate site looked equally hopeless, the bot answered
+    "nowhere to build" for the rest of the match, and it banked 311 supply at an
+    army cap it could have been raising."""
+    from standing_orders.ai import BotBrain
+
+    match = started(2, map_name="basin")
+    state = match.state
+    base = next(b for b in state.buildings_of(0) if b.code == "base")
+    for dx in range(-2, 3):
+        for dy in range(-2, 3):
+            tile = (base.x + dx, base.y + dy)
+            if tile != base.tile and state.map.passable(*tile):
+                state.add_unit(0, "trooper", tile[0], tile[1])
+    site = BotBrain("veteran", random.Random(6))._site_near(state, base.tile,
+                                                            radius=4)
+    assert site is not None, "a crowd around the base is not a wall"
+
+
+def test_even_a_novice_builds_something():
+    """A Novice builds no Depots by definition, and the first Barracks was
+    gated on having one -- so it built *nothing at all*, measured at turn 100
+    with one Command Post, an army of twelve and 305 supply banked. A
+    beginners' opponent should be beatable, not inert."""
+    from standing_orders.ai import BotBrain
+
+    match = started(2, map_name="basin")
+    state = match.state
+    state.players[0].supply = 60
+    orders = BotBrain("novice", random.Random(7)).plan(match, state.players[0])
+    assert [o for o in orders if o["o"] == "build" and o["code"] == "barracks"]
+
+
+def test_two_rules_in_one_turn_cannot_claim_the_same_square():
+    """Every rule asked for "the closest free tile", so a Depot and a Barracks
+    were ordered onto one square, both charged for, and whichever Engineer
+    arrived second had its job refunded -- a bot that thought it was raising
+    three buildings raised one and walked two Engineers nowhere."""
+    from standing_orders.ai import BotBrain
+
+    match = started(2, map_name="basin")
+    state = match.state
+    me = state.players[0]
+    me.supply = 400
+    for i in range(6):
+        state.add_unit(0, "worker", 6 + i, 6)
+    brain = BotBrain("cyborg", random.Random(8))
+    orders = brain.plan(match, me)
+    sites = [tuple(o["to"]) for o in orders if o["o"] == "build"]
+    assert len(sites) == len(set(sites)), f"two builds on one tile: {sites}"
+
+
+def test_nobody_trucks_with_their_last_enemy():
+    """A truce with your only remaining enemy is not diplomacy, it is quitting:
+    nothing else can happen afterwards and the match ends in an armistice with
+    one side clearly ahead. Half of all two-player matches ended that way, and
+    several on the exact turn peace became legal."""
+    from standing_orders.ai import DIPLOMACY_EARLIEST, BotBrain
+
+    match = started(2, map_name="duel")
+    state = match.state
+    state.turn = DIPLOMACY_EARLIEST + 5
+    # Make player 0 hopelessly behind, which is exactly when it used to fold.
+    for _ in range(12):
+        state.add_unit(1, "bruiser", 20, 10)
+    brain = BotBrain("veteran", random.Random(9))
+    orders = brain._diplomacy(match, state.players[0])
+    assert not [o for o in orders if o["o"] in ("propose", "accept")], orders
+
+
+def test_a_bot_that_is_winning_does_not_sue_for_peace():
+    """Weariness used to fire on the turn clock alone, which handed won wars
+    away from in front: a bot three times its enemy's size and marching on
+    their Command Post proposed terms, the loser accepted gratefully, and the
+    win went down as a draw. A war you are getting somewhere in is not a war
+    that is going nowhere."""
+    from standing_orders.ai import STALE_TURNS, WAR_WEARY, BotBrain
+
+    match = started(4, teams=True, map_name="crossroads")
+    state = match.state
+    state.turn = WAR_WEARY
+    for _ in range(14):                    # player 0 is streets ahead
+        state.add_unit(0, "bruiser", 4, 4)
+
+    winning = BotBrain("veteran", random.Random(10))
+    assert not [o for o in winning._diplomacy(match, state.players[0])
+                if o["o"] == "propose"], "a bot handed away a war it was winning"
+
+    # ...but being ahead is not the same as getting anywhere. A commander whose
+    # holding has not grown in STALE_TURNS turns is stuck, however big it is,
+    # and a stuck war is what the armistice machinery is for.
+    stuck = BotBrain("veteran", random.Random(11))
+    stuck._diplomacy(match, state.players[0])          # records the high-water
+    state.turn = WAR_WEARY + STALE_TURNS
+    assert [o for o in stuck._diplomacy(match, state.players[0])
+            if o["o"] == "propose"], "a stalled war never gets talked about"
+
+
+def test_production_lines_scale_with_the_army_cap():
+    """One Barracks is a queue, not a factory: a cap of 36 reinforced out of a
+    single door at one unit every other turn, which is how a bot ends a match
+    with 280 supply banked against a human running twenty Barracks."""
+    from standing_orders.ai import BotBrain
+
+    match = started(2, map_name="basin")
+    state = match.state
+    brain = BotBrain("cyborg", random.Random(12))
+    small = brain._lines_wanted(state, state.players[0])
+    for i in range(8):                     # depots raise the cap
+        state.add_building(0, "depot", 6 + i, 14)
+    big = brain._lines_wanted(state, state.players[0])
+    assert big > small, f"{small} -> {big}: production ignores the economy"
+
+
+def test_the_builder_corps_grows_with_the_treasury():
+    """One shovel raises a structure every five turns however rich the bot is,
+    which is why bots banked hundreds of supply -- not for want of anything to
+    buy, but for want of anybody free to buy it with."""
+    from standing_orders.ai import BUILDERS_MAX, BotBrain
+
+    match = started(2, map_name="basin")
+    state = match.state
+    me = state.players[0]
+    crew = [state.add_unit(0, "worker", 6 + i, 6) for i in range(BUILDERS_MAX + 2)]
+    brain = BotBrain("veteran", random.Random(13))
+    receivers = state.receivers_of(0)
+
+    me.supply = 0
+    assert not brain._builder_corps(state, me, crew, receivers)
+    me.supply = 20
+    poor = len(brain._builder_corps(state, me, crew, receivers))
+    me.supply = 400
+    rich = len(brain._builder_corps(state, me, crew, receivers))
+    assert 0 < poor < rich <= BUILDERS_MAX
+    assert rich < len(crew), "somebody has to keep the lights on"

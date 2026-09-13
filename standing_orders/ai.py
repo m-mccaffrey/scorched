@@ -17,7 +17,7 @@ import random
 from dataclasses import dataclass
 
 from .fog import VisionCache, team_vision
-from .grid import chebyshev, manhattan
+from .grid import NEIGHBOURS, chebyshev, manhattan
 from .resolve import PACT_BINDING
 from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, ARMY_CAP_BASE, BUILDING,
                     DEPOT_CAP, HARVEST_RADIUS, UNIT, available_research,
@@ -38,7 +38,12 @@ class Skill:
     defends: bool         # comes home when the base is threatened
     workers: int          # Engineers it will put to work
     researches: bool      # spends surplus on upgrades
-    barracks: int         # production lines it will run at once
+    #: The most production lines it will ever run. Not the number it builds:
+    #: what it wants is worked out from the army cap it has actually reached
+    #: (see ``_lines_wanted``), because a Barracks is throughput and throughput
+    #: is what a big army needs. A flat number here meant a bot with a cap of
+    #: 36 still trickling reinforcements out of one door.
+    barracks: int
     expands: bool         # builds forward depots to grow its cap
     #: Whether it negotiates at all. A Novice fights everyone until it dies,
     #: which is a perfectly good beginners' opponent; everyone above it will
@@ -54,11 +59,14 @@ class Skill:
     supports: int
 
 
+#: Fields in order: mass_at, counter_pick, defends, workers, researches,
+#: barracks, expands, talks, supports. Spelled out because the barracks and
+#: workers columns sit next to each other and are easy to transpose.
 SKILLS = {
     "novice": Skill(2, 0.0, False, 1, False, 1, False, False, 0),
-    "moderate": Skill(4, 0.4, True, 2, True, 2, True, True, 1),
-    "veteran": Skill(6, 0.85, True, 3, True, 3, True, True, 2),
-    "cyborg": Skill(7, 1.0, True, 4, True, 3, True, True, 2),
+    "moderate": Skill(4, 0.4, True, 3, True, 4, True, True, 1),
+    "veteran": Skill(6, 0.85, True, 4, True, 6, True, True, 2),
+    "cyborg": Skill(7, 1.0, True, 5, True, 8, True, True, 2),
 }
 SKILL_ORDER = ("novice", "moderate", "veteran", "cyborg")
 
@@ -71,6 +79,30 @@ BARRACKS_BUFFER = 2
 #: the front -- so a single line is a permanent stalemate however good the
 #: economy behind it.
 EXPAND_SURPLUS = 26
+
+#: Army cap per production line a bot aims for. A Barracks turns out a unit
+#: every couple of turns, and an army of thirty in contact loses several a
+#: turn, so one door is a queue however much money is behind it. Measured: a
+#: Moderate bot on a hundred-turn match finished with two Barracks, an army of
+#: twenty and 280 supply banked, against a human with twenty Barracks who
+#: replaced losses as fast as they happened. Money was never the constraint.
+CAP_PER_LINE = 10
+
+#: Builders a bot keeps off the resource nodes, and the banked supply that buys
+#: each one after the first. An Engineer parked on a node earns and never
+#: builds again, so with one builder the whole construction programme runs at
+#: one structure every four or five turns whatever the treasury looks like.
+#: This is the knob that turns banked supply into buildings.
+BUILDERS_BASE = 1
+SUPPLY_PER_BUILDER = 45
+BUILDERS_MAX = 4
+
+#: Sentry Towers a bot will raise at home, once it has an army to lose. Eight
+#: supply for something that shoots three tiles and never retreats is the best
+#: trade in the game and bots were not making it at all -- they met a walled
+#: base with towers at the gates using nothing but infantry.
+TOWERS_AT_HOME = 3
+TOWER_BUFFER = 16
 
 #: Only start a research project with this much supply to spare, so teching
 #: never comes at the price of an army.
@@ -97,6 +129,26 @@ BETRAY_MARGIN = 1.6
 #: A bot will not break a pact before this turn. Early alliances need room to
 #: mean something, and a first-turn betrayal just reads as a bug.
 BETRAYAL_EARLIEST = 30
+
+#: A war nobody has had time to fight yet cannot be ended by agreement. Bots
+#: call for an armistice when the shooting has stopped, and once they had real
+#: armies to compare, three of four read themselves as the underdog, truced
+#: their way round the table and ended the war on turn 23 with nothing decided.
+#: A human who sat down for a war is owed one. Peace becomes available later;
+#: the betrayal rules can restart a war that went quiet before then, which is a
+#: better shape for a match anyway -- a pause, then somebody breaks it.
+PEACE_EARLIEST = 45
+
+#: Turns without taking any more ground before a bot calls a war stuck.
+#:
+#: Weariness first read "am I behind?", which handed won wars away: a bot three
+#: times its enemy's size proposed terms on turn 110 and the loser accepted
+#: gratefully. Gating it on being behind fixed that and broke the other end --
+#: a leader who could not finish the job never asked for anything, and
+#: four-player matches ran past 250 turns. Neither question is the right one.
+#: The right one is whether the war is *going* anywhere, which is a question
+#: about progress, not about size.
+STALE_TURNS = 40
 
 #: A war this old is going nowhere, and a bot will start offering terms to
 #: anyone it is still fighting.
@@ -141,6 +193,23 @@ STRIKE_RESERVE = 10
 #: stops trading in the middle and marches on a Command Post.
 PRESS_ADVANTAGE = 1.35
 
+#: Fighters that make a bot commit to an attack regardless of the odds.
+#:
+#: The other trigger for committing is being at the army cap -- at the ceiling,
+#: waiting buys nothing -- and that quietly stopped working the moment bots
+#: learned to keep building Depots: a bot whose cap rises every few turns is
+#: never *at* it, so it sat at home out-expanding an enemy it never attacked.
+#: Matches that failed to resolve inside 140 turns went from 30% to 52% on that
+#: alone.
+#:
+#: Flat, and deliberately not a multiple of ``mass_at``. Scaling it by the
+#: group size a tier likes to gather inverted the whole ladder: Veteran waits
+#: for six where Moderate waits for four, so tying commitment to it made the
+#: more cautious tier commit *later* as well as in bigger blocks, and Moderate
+#: beat both tiers above it 11 games in 12. mass_at is about cohesion. This is
+#: about when an army is a war-winning force, which does not depend on taste.
+COMMIT_ARMY = 14
+
 #: Fighters this close to the spearhead count as "with the army". Without a
 #: rally step the bot feeds reinforcements to the front one at a time, where
 #: they lose every fight three-to-one; a tighter army cap used to hide this by
@@ -167,6 +236,11 @@ class BotBrain:
                  rng: random.Random | None = None) -> None:
         self.skill = skill if skill in SKILLS else "moderate"
         self.rng = rng or random.Random()
+        #: The most ground this commander has ever held, and when it last grew.
+        #: The only memory a brain keeps between turns, and it is what tells a
+        #: stalled war from a winnable one.
+        self._ground_high = -1
+        self._ground_since = 0
 
     # -- top level ---------------------------------------------------------
     def plan(self, match, me) -> list:
@@ -189,9 +263,10 @@ class BotBrain:
         # on construction. Doing it the other way round sends the whole labour
         # force off to build a distant depot while a node beside the Command
         # Post sits idle.
-        worker_orders, busy = self._workers(match, me, my_units)
+        worker_orders, busy, shovels = self._workers(match, me, my_units)
         orders += worker_orders
-        orders += self._economy(match, me, my_buildings, my_units, enemies, busy)
+        orders += self._economy(match, me, my_buildings, my_units, enemies,
+                                busy, shovels)
         orders += self._army(match, me, my_units, my_buildings, enemies,
                              enemy_buildings, vision)
         return orders
@@ -226,10 +301,33 @@ class BotBrain:
         mine = self._might_of(state, me.pid)
         others = [p for p in state.players.values()
                   if p.alive and p.pid != me.pid]
+
+        # Before anything else, and before the early return: how long has this
+        # war been static? Ground held is the game's own measure of who is
+        # getting anywhere, so a commander whose best-ever holding has not
+        # budged in STALE_TURNS turns is in a war that is going nowhere,
+        # whatever the relative army sizes say.
+        ground = state.holding(me.pid)
+        if ground > self._ground_high:
+            self._ground_high = ground
+            self._ground_since = state.turn
+        stalled = state.turn - self._ground_since >= STALE_TURNS
+
         if not others:
             return []
         if state.turn < DIPLOMACY_EARLIEST:
             return []
+        # A truce with your only remaining enemy is not diplomacy, it is
+        # quitting: nothing else can happen on the board afterwards, and the
+        # match ends in an armistice with one side clearly ahead. Half of all
+        # two-player matches ended that way, several on the exact turn peace
+        # became legal. Diplomacy needs a third party to be about anything.
+        #
+        # Counted in players and not in blocs on purpose. A 2v2 is two sides,
+        # but a truce there still leaves the other enemy shooting, so the
+        # institution keeps working -- and counting blocs disarmed the brake
+        # that stops a teams match grinding to the turn limit.
+        two_sided = sum(1 for p in state.players.values() if p.alive) <= 2
         strongest = max(others, key=lambda p: self._might_of(state, p.pid))
         at_war = [p for p in others if state.hostile(me.pid, p.pid)]
         burden = sum(self._might_of(state, p.pid) for p in at_war)
@@ -244,7 +342,7 @@ class BotBrain:
         # shooting at anybody, the war has already stopped and somebody should
         # say so. Without that last clause bot-only matches truced themselves
         # into a frozen stalemate and ran to the turn limit six times in eight.
-        if me.pid not in state.armistice:
+        if me.pid not in state.armistice and state.turn >= PEACE_EARLIEST:
             ours = state.bloc_holding(me.pid)
             joining = state.armistice and (ours >= best_rival_ground
                                            or mine * SUE_FOR_PEACE < burden)
@@ -261,7 +359,7 @@ class BotBrain:
             # than it sounds: while one commander refused to talk at all, peace
             # was unreachable for everybody and two bots who had stopped
             # fighting each other sat in a stalemate for a hundred turns.
-            if offered is not None:
+            if offered is not None and not two_sided:
                 if not SKILLS[self.skill].talks:
                     orders.append({"o": "accept", "from": other.pid})
                     continue
@@ -274,15 +372,29 @@ class BotBrain:
             if not SKILLS[self.skill].talks:
                 continue
 
-            if pact == "war":
+            if pact == "war" and not two_sided:
                 # Ask for terms when genuinely losing to this one, or when the
                 # front-runner is beating us and this is a sideshow we cannot
                 # afford. Note the second requires actually being at war with
                 # the leader -- without that clause every bot sued everybody on
                 # turn one and no war ever started.
                 losing = theirs > mine * SUE_FOR_PEACE
-                weary = state.turn >= WAR_WEARY
+                # Weariness is for wars that are going nowhere, and a war you
+                # are winning is going somewhere. Ungated, this handed the
+                # match away from in front: a bot three times its enemy's size
+                # and marching on their Command Post proposed terms on turn
+                # 110, the loser accepted gratefully, and a won war was
+                # recorded as a draw. Half of all unresolved duels were this.
+                weary = (state.turn >= WAR_WEARY
+                         and (stalled or mine <= theirs * SUE_FOR_PEACE))
+                # ...and not with somebody we are beating. The clause below
+                # used to be "the leader is ahead of me", full stop, which in a
+                # four-way war is true for almost everybody: three bots would
+                # truce with each other over a leader none of them then fought,
+                # the board went quiet, and the match ended in an armistice
+                # before turn 25. You do not buy off an enemy weaker than you.
                 sideshow = (other.pid != strongest.pid
+                            and theirs * SUE_FOR_PEACE >= mine
                             and state.hostile(me.pid, strongest.pid)
                             and self._might_of(state, strongest.pid)
                             > mine * SUE_FOR_PEACE)
@@ -308,15 +420,17 @@ class BotBrain:
     def _workers(self, match, me, my_units) -> tuple:
         """Park idle Engineers on nodes a depot can actually reach.
 
-        Returns the orders and the set of Engineers now spoken for, so the
-        economy does not hand the same worker a building job as well.
+        Returns the orders, the set of Engineers now spoken for so the economy
+        does not hand the same worker a building job as well, and the builder
+        corps: Engineers deliberately kept off the nodes with a shovel in hand.
 
-        One Engineer is held back as a builder whenever there is money worth
-        spending. This step used to claim every free Engineer for a node
-        before the economy got a look, and since an Engineer on a node never
-        becomes free again, that was the whole reason bots finished matches
-        with one building, an army capped at twelve and three hundred supply
-        they could not spend.
+        This step used to claim every free Engineer for a node before the
+        economy got a look, and since an Engineer on a node never becomes free
+        again, that was the whole reason bots finished matches with one
+        building, an army capped at twelve and three hundred supply they could
+        not spend. Holding *one* back was the first fix and not enough: one
+        shovel raises a structure every five turns, so a bot with a cap of 36
+        and 150 supply banked still ran two Barracks.
         """
         state = match.state
         receivers = state.receivers_of(me.pid)
@@ -324,24 +438,67 @@ class BotBrain:
         busy: set = set()
         taken = {(u.x, u.y) for u in my_units if u.builder}
         crew = [u for u in my_units if u.builder]
-        spare = 1 if (me.supply >= BUILD_RESERVE and len(crew) > 1) else 0
+        shovels = self._builder_corps(state, me, crew, receivers)
         for worker in crew:
             if worker.job is not None:
                 busy.add(worker.uid)
                 continue
+            if worker.uid in shovels:
+                continue                   # keep this one holding a shovel
             if state.map.is_node(worker.x, worker.y) and any(
                     chebyshev(worker.tile, r.tile) <= HARVEST_RADIUS
                     for r in receivers):
                 busy.add(worker.uid)           # already earning; leave it be
                 continue
-            if spare and worker is crew[-1]:
-                continue                   # keep the last one holding a shovel
             node = self._workable_node(state, me, worker, receivers, taken)
             if node is not None:
                 taken.add(node)
                 busy.add(worker.uid)
                 orders.append({"o": "move", "uid": worker.uid, "to": list(node)})
-        return orders, busy
+        return orders, busy, shovels
+
+    def _builder_corps(self, state, me, crew, receivers) -> set:
+        """The Engineers to keep off the nodes, given what is in the treasury.
+
+        One was the old answer and it was the ceiling on everything: a builder
+        spends a couple of turns walking and two or three building, so a single
+        shovel raises one structure every five turns no matter how rich the bot
+        is. That is why bots banked hundreds of supply -- not because they had
+        nothing worth buying, but because they had nobody free to buy it with.
+        The second and third builders are bought with the surplus itself, so a
+        poor bot still puts everyone to work.
+
+        Drafted from the Engineers who are *not* earning first. Only a bot with
+        real money in the bank takes one off a live node, and it never takes the
+        last one: somebody has to keep the lights on.
+        """
+        if me.supply < BUILD_RESERVE or len(crew) < 2:
+            return set()
+        want = BUILDERS_BASE + (me.supply - BUILD_RESERVE) // SUPPLY_PER_BUILDER
+        want = max(0, min(want, BUILDERS_MAX, len(crew) - 1))
+        if not want:
+            return set()
+
+        def earning(worker) -> bool:
+            return state.map.is_node(worker.x, worker.y) and any(
+                chebyshev(worker.tile, r.tile) <= HARVEST_RADIUS
+                for r in receivers)
+
+        free = [u for u in crew if u.job is None]
+        # Idle hands first, then whoever is standing on a node -- and the
+        # earners only once the treasury says throughput matters more than
+        # income. A builder that never leaves its node is not a builder, which
+        # is what the old version amounted to: it held back whichever Engineer
+        # came last, node or no node, and that one was almost always earning.
+        draft = [u for u in free if not earning(u)]
+        if len(draft) < want and me.supply >= DEADLOCK_SUPPLY:
+            draft += [u for u in free if earning(u)]
+        return {u.uid for u in draft[:want]}
+
+    def _lines_wanted(self, state, me) -> int:
+        """How many Barracks this bot is trying to have standing."""
+        cap = state.army_cap_of(me.pid)
+        return min(SKILLS[self.skill].barracks, 1 + cap // CAP_PER_LINE)
 
     def _workable_node(self, state, me, worker, receivers, taken):
         best = None
@@ -361,7 +518,7 @@ class BotBrain:
 
     # -- production --------------------------------------------------------
     def _economy(self, match, me, my_buildings, my_units, enemies,
-                 busy=frozenset()) -> list:
+                 busy=frozenset(), shovels=frozenset()) -> list:
         state = match.state
         busy = set(busy)
         orders: list = []
@@ -374,7 +531,8 @@ class BotBrain:
         # An Engineer standing on a live node is earning its keep; pulling it
         # off to go and build something is how a bot starves itself.
         earning = {u.uid for u in workers
-                   if state.map.is_node(u.x, u.y)
+                   if u.uid not in shovels
+                   and state.map.is_node(u.x, u.y)
                    and any(chebyshev(u.tile, r.tile) <= HARVEST_RADIUS
                            for r in receivers)}
         idle_workers = [u for u in workers
@@ -420,10 +578,14 @@ class BotBrain:
                      and budget >= DEADLOCK_SUPPLY)
             return earners[0] if len(earners) > 1 or stuck else None
 
+        #: Sites promised this turn, so two rules cannot claim one square.
+        spoken_for: set = set()
+
         def commit(worker, code: str, site) -> None:
             if worker in idle_workers:
                 idle_workers.remove(worker)
             busy.add(worker.uid)
+            spoken_for.add(tuple(site))
             orders.append({"o": "build", "uid": worker.uid, "code": code,
                            "to": list(site)})
 
@@ -434,10 +596,18 @@ class BotBrain:
         #    asks first gets it. When the Depot rules asked first, bots
         #    finished with seventeen Depots, no Barracks at all, and an army
         #    of Scouts and Troopers: half the roster never built, all game.
+        #    A bot that does not expand at all is exempt from the Depot gate.
+        #    A Novice builds no Depots by definition, so the gate meant it
+        #    built *nothing* for a whole match: measured at turn 100 with one
+        #    Command Post, an army of twelve and 305 supply banked, having
+        #    never placed a single structure. A beginners' opponent should be
+        #    beatable, not inert.
         price = cost_of_building("barracks", me.research)
-        if not barracks and depots and budget >= price + BARRACKS_BUFFER:
+        gate = bool(depots) or not SKILLS[self.skill].expands
+        if not barracks and gate and budget >= price + BARRACKS_BUFFER:
             worker = hands_for(price, BARRACKS_BUFFER)
-            site = self._site_near(state, bases[0].tile, radius=4)
+            site = self._site_near(state, bases[0].tile, radius=4,
+                                   avoid=spoken_for)
             if worker is not None and site is not None:
                 commit(worker, "barracks", site)
                 budget -= price
@@ -452,7 +622,7 @@ class BotBrain:
             price = cost_of_building("depot", me.research)
             if node is None or budget < price:
                 continue
-            site = self._site_near(state, node)
+            site = self._site_near(state, node, avoid=spoken_for)
             if site is None:
                 continue
             commit(worker, "depot", site)
@@ -477,20 +647,49 @@ class BotBrain:
             price = cost_of_building("depot", me.research)
             if budget >= price + EXPAND_SURPLUS:
                 worker = hands_for(price, EXPAND_SURPLUS)
-                site = self._site_near(state, bases[0].tile, radius=4)
+                site = self._site_near(state, bases[0].tile, radius=4,
+                                   avoid=spoken_for)
                 if worker is not None and site is not None:
                     commit(worker, "depot", site)
                     budget -= price
 
-        # 3. More production once the economy outruns one Barracks.
+        # 3. More production, as many lines as the army cap justifies. This
+        #    used to stop at a flat number per skill -- two for a Moderate --
+        #    which is a queue, not a factory: the cap rises to 36 and the
+        #    reinforcements still come out of one door at one unit every other
+        #    turn. Several lines a turn is fine now that there is more than one
+        #    builder to raise them.
         price = cost_of_building("barracks", me.research)
-        if (barracks and len(barracks) < SKILLS[self.skill].barracks
-                and budget >= price + EXPAND_SURPLUS):
+        while (barracks and len(barracks) < self._lines_wanted(state, me)
+               and budget >= price + EXPAND_SURPLUS):
             worker = hands_for(price, EXPAND_SURPLUS)
-            site = self._site_near(state, bases[0].tile, radius=5)
-            if worker is not None and site is not None:
-                commit(worker, "barracks", site)
-                budget -= price
+            site = self._site_near(state, bases[0].tile, radius=5,
+                                   avoid=spoken_for)
+            if worker is None or site is None:
+                break
+            commit(worker, "barracks", site)
+            budget -= price
+            barracks = barracks + [None]
+
+        # 3a. Sentry Towers at home. Eight supply for something that shoots
+        #     three tiles and never runs is the best trade on the board, and
+        #     bots were not making it: they walked infantry into a walled base
+        #     with towers at the gates and wondered where the army went. Only
+        #     for bots that defend at all, and only once there is something
+        #     behind the wall worth shooting over.
+        towers = [b for b in my_buildings if b.code == "tower"]
+        price = cost_of_building("tower", me.research)
+        while (SKILLS[self.skill].defends and barracks
+               and len(towers) < TOWERS_AT_HOME
+               and budget >= price + TOWER_BUFFER):
+            worker = hands_for(price, TOWER_BUFFER)
+            site = self._site_near(state, bases[0].tile, radius=3,
+                                   avoid=spoken_for)
+            if worker is None or site is None:
+                break
+            commit(worker, "tower", site)
+            budget -= price
+            towers = towers + [None]
 
         # 3b. Support buildings, once there is an army worth supporting. A
         #     Field Hospital first -- it pays back every turn there is a
@@ -515,7 +714,8 @@ class BotBrain:
             if budget < price + SUPPORT_BUFFER:
                 continue
             worker = hands_for(price, SUPPORT_BUFFER)
-            site = self._site_near(state, bases[0].tile, radius=3)
+            site = self._site_near(state, bases[0].tile, radius=3,
+                                   avoid=spoken_for)
             if worker is None or site is None:
                 continue
             commit(worker, code, site)
@@ -596,22 +796,82 @@ class BotBrain:
                 best = (distance, node)
         return best[1] if best else None
 
-    def _site_near(self, state, origin, radius: int = 3):
-        """A free, buildable tile close to somewhere."""
-        occupied = set(state.occupancy())
-        candidates = []
-        for dy in range(-radius, radius + 1):
-            for dx in range(-radius, radius + 1):
-                tile = (origin[0] + dx, origin[1] + dy)
-                if not state.map.passable(*tile) or state.map.is_node(*tile):
+    def _site_near(self, state, origin, radius: int = 3, avoid=()):
+        """A free, buildable tile close to somewhere that does not seal it in.
+
+        ``avoid`` is what this bot has already promised to build on this turn.
+        Without it every rule in a turn picked the same closest tile: a Depot
+        and a Barracks would be ordered onto one square, both charged for, and
+        whichever Engineer arrived second had its job refunded and cancelled --
+        so a bot that thought it was raising three buildings raised one and
+        burned two Engineers walking to a site that was already taken.
+
+        The rest of this is about not bricking yourself up. Sites were chosen
+        by closeness to the Command Post and nothing else, which lays a solid
+        ring of Barracks and Depots around it -- and movement in this game is
+        four-directional, so a ring is a wall. Measured on a duel at turn 150: a
+        Veteran with eleven Depots, six Barracks and an army of sixty had all
+        thirty-five of its fighters *entirely without a route to the enemy*,
+        ordered to attack every turn, penned inside their own yard. The enemy
+        Command Post sat at full health for two hundred turns. This was the
+        whole of "the AI does not seem to want to win": it wanted to, and it
+        had bricked itself in. Two rules follow: leave the Command Post a moat,
+        and never take the tile that closes the pocket.
+        """
+        occupied = set(state.occupancy()) | set(avoid)
+        # Only structures and terrain count as walls for the escape test.
+        # Occupancy includes *units*, and units move: counting them meant a
+        # yard with somebody standing in each gap read as permanently sealed,
+        # every candidate site looked equally hopeless, and the bot answered
+        # "nowhere to build" for the rest of the match -- 311 supply banked at
+        # an army cap it could have been raising. A body in a doorway is not a
+        # wall.
+        walls = {b.tile for b in state.buildings.values() if b.alive} | set(avoid)
+        # Widening rings, because a yard fills up. A fixed radius meant a bot
+        # with seven buildings around its Command Post simply stopped finding
+        # anywhere to build: it banked 311 supply at the army cap with three
+        # Depots and a ceiling of 60 it could have been climbing. A base needs
+        # a yard, and then it needs a bigger one.
+        for span in (radius, radius + 4, radius + 8):
+            candidates = []
+            for dy in range(-span, span + 1):
+                for dx in range(-span, span + 1):
+                    tile = (origin[0] + dx, origin[1] + dy)
+                    if not state.map.passable(*tile) or state.map.is_node(*tile):
+                        continue
+                    if tile in occupied or chebyshev(tile, origin) < 2:
+                        continue
+                    candidates.append(tile)
+            candidates.sort(key=lambda t: (chebyshev(t, origin), t))
+            for tile in candidates:
+                if self._escapes(state, origin, walls | {tile}, span):
+                    return tile
+        return None
+
+    def _escapes(self, state, origin, blocked, radius: int) -> bool:
+        """Can somebody standing at ``origin`` still walk out past ``radius``?
+
+        A bounded flood fill, four-directional because that is how units move.
+        It gives up once it is clear of the build zone, so the usual answer
+        costs a few dozen tiles rather than a map-wide search.
+        """
+        reach = radius + 2
+        frontier = [origin]
+        seen = {origin}
+        budget = 8 * reach * reach
+        while frontier and len(seen) < budget:
+            x, y = frontier.pop()
+            if chebyshev((x, y), origin) > reach:
+                return True
+            for dx, dy in NEIGHBOURS:
+                step = (x + dx, y + dy)
+                if step in seen or step in blocked:
                     continue
-                if tile in occupied or chebyshev(tile, origin) < 1:
+                if not state.map.passable(*step):
                     continue
-                candidates.append(tile)
-        if not candidates:
-            return None
-        candidates.sort(key=lambda t: (chebyshev(t, origin), t))
-        return candidates[0]
+                seen.add(step)
+                frontier.append(step)
+        return False
 
     def _producer(self, my_buildings, code: str):
         needed = UNIT[code].built_at
@@ -724,7 +984,9 @@ class BotBrain:
             # single turn from behind fog, so it never expanded, never
             # out-economied anybody, and simply fed its army in forever.
             spare = state.army_cap_of(me.pid) - state.army_size(me.pid)
-            at_cap = spare <= 2
+            # Either the army has stopped growing, or it is big enough that
+            # growing it further is not the point any more.
+            at_cap = spare <= 2 or len(attackers) >= COMMIT_ARMY
             pressing = at_cap or (bool(enemies)
                                   and mine >= theirs * PRESS_ADVANTAGE)
 

@@ -363,3 +363,129 @@ def test_the_shroud_follows_the_camera():
     renderer.board.scroll_by(400, 300)
     renderer.set_fog(visible, visible)
     assert renderer._fog_key != first, "the shroud did not notice the camera"
+
+
+def _tip_over(app, tile):
+    """What the board tooltip says about ``tile``, as plain strings."""
+    app._tips = []
+    x, y = app.renderer.board.to_screen(tile)
+    app.mouse = (x + 1, y + 1)
+    app._collect_board_tip()
+    return [text for rect, lines in app._tips for text, _, _ in lines]
+
+
+def test_the_tooltip_does_not_read_through_the_fog(app):
+    """The client is handed the whole terrain map so it can draw ground under
+    the shroud, which turned this tooltip into a scouting instrument: run the
+    pointer across the black and it named the terrain and every resource node
+    behind it, owner included. Fog you can read is not fog."""
+    from standing_orders.client.render import Renderer
+    from standing_orders.client.view import WorldView
+    from standing_orders.game import load_map
+
+    app.renderer = Renderer()
+    app.renderer.begin_match(load_map("basin"))
+    app.view = WorldView()
+    app.my_pid = 0
+    app.players = {0: {"name": "Ada", "team": 0}, 1: {"name": "Bo", "team": 1}}
+    app.colors = {0: 0, 1: 1}
+
+    node = sorted(app.renderer.board.map.nodes)[0]
+    app.view.node_owner[node] = 1
+
+    dark = _tip_over(app, node)
+    assert dark == ["Unscouted"], f"the fog leaked: {dark}"
+
+    # Scouted once, but not in sight now: the ground is yours to remember,
+    # who holds the node this turn is not.
+    app.view.explored.add(node)
+    remembered = _tip_over(app, node)
+    assert any("Out of sight" in line for line in remembered), remembered
+    assert not any("Bo" in line for line in remembered), remembered
+
+    app.view.visible.add(node)
+    live = _tip_over(app, node)
+    assert any("Held by Bo" in line for line in live), live
+
+
+def test_node_colours_do_not_leak_through_the_fog(app):
+    """Same leak by another route: explored ground stays drawn under a veil,
+    so a crate painted in its current holder's colour announced a capture from
+    across the map."""
+    from standing_orders.client.render import C_NODE, Renderer, team_color
+    from standing_orders.game import load_map
+
+    renderer = Renderer()
+    renderer.begin_match(load_map("basin"))
+    node = next(t for t in sorted(renderer.board.map.nodes)
+                if renderer.board.on_screen(t))
+    surface = pygame.Surface((SCREEN_W, SCREEN_H))
+
+    def crate_colour(visible, mine):
+        surface.fill((0, 0, 0))
+        renderer.draw_nodes(surface, {node: 1}, {1: 1}, visible, mine)
+        x, y = renderer.board.to_screen(node)
+        from standing_orders.client.render import TILE
+        return {surface.get_at((x + dx, y + dy))[:3]
+                for dx in range(TILE) for dy in range(TILE)}
+
+    theirs = team_color(1)[:3]
+    assert theirs in crate_colour({node}, 0), "a node in sight lost its owner"
+    assert theirs not in crate_colour(set(), 0), "an unseen node named its owner"
+    assert theirs in crate_colour(set(), 1), "our own node went neutral"
+    assert tuple(C_NODE[:3]) in crate_colour(set(), 0)
+
+
+def test_tooltips_can_be_turned_off(app, monkeypatch):
+    """I toggles them. Tooltips follow the pointer everywhere, which is right
+    while you are learning the sprites and a curtain across the board after."""
+    from standing_orders.client import app as app_module
+
+    drawn = []
+    monkeypatch.setattr(app_module, "draw_tooltip",
+                        lambda *a, **k: drawn.append(a))
+
+    # _draw rebuilds _tips through the painter for the current mode, so stand
+    # a painter in that parks one tip over the whole screen. Anything the real
+    # _draw does with the flag after that is what is under test.
+    was, app.mode = app.mode, "probe"
+    monkeypatch.setattr(app, "_draw_menu", lambda: app._tips.append(
+        (pygame.Rect(0, 0, SCREEN_W, SCREEN_H), [("x", None, 14)])),
+        raising=False)
+
+    def hover():
+        app.mouse = (10, 10)
+        app._draw()
+
+    assert app.tips_on
+    hover()
+    assert drawn, "a tooltip was not drawn with tooltips on"
+
+    press = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_i)
+    app._game_key(press)
+    assert not app.tips_on
+    drawn.clear()
+    hover()
+    assert not drawn, "a tooltip was drawn with tooltips off"
+
+    app._game_key(press)
+    assert app.tips_on
+    app.mode = was
+
+
+def test_the_pointer_at_the_edge_of_the_board_does_not_pan(app):
+    """Edge-pan scrolled the board out from under every trip down to the build
+    menu, because reaching for a button crosses the bottom edge of the map."""
+    from standing_orders.client.render import Board, Renderer
+    from standing_orders.game import load_map
+
+    app.renderer = Renderer()
+    app.renderer.begin_match(load_map("reach"))
+    board = app.renderer.board
+    board.cam_x = board.cam_y = 0
+    for spot in ((Board.VIEW.x + 1, Board.VIEW.centery),
+                 (Board.VIEW.right - 1, Board.VIEW.centery),
+                 (Board.VIEW.centerx, Board.VIEW.bottom - 1)):
+        app.mouse = spot
+        app._scroll_camera(0.5)
+    assert (board.cam_x, board.cam_y) == (0, 0), "the pointer moved the camera"

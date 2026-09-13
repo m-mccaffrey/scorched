@@ -192,8 +192,21 @@ work across a wide range of ages at one table.
 | `Tab` | Select your whole army |
 | `Enter` | Commit your orders |
 | `Space` | Skip a replay |
+| `W` `A` `S` `D` / arrows | Move the camera · click the minimap to jump · `Home` returns to your Command Post |
 | Hover anything | A tooltip explaining it — terrain, units, buildings, nodes |
+| `I` | Tooltips on or off |
 | `T` | Chat · `Esc` Pause · `F11` Fullscreen |
+
+The camera moves on the keys and the minimap only. Nudging the edge of the map
+with the pointer used to pan too, and it had to go: every trip from the board
+down to the build menu crosses the bottom edge, so reaching for a button
+scrolled the board out from under the thing you were about to click.
+
+Tooltips tell you what a coloured square is, which is essential for a week and
+then a curtain across the board — hence the toggle. They also never read through
+the fog: run the pointer over unscouted black and it says "Unscouted" and
+nothing else. It used to name the terrain, and tell you where every resource
+node was and who held it, which made the shroud decorative.
 
 Marching and advancing is a real trade-off rather than a strict upgrade:
 picking your way forward ready to fight costs you a quarter of your speed, so
@@ -483,6 +496,29 @@ a *settlement*: without ground held deciding it, stopping costs nothing, every
 bot works that out, and three matches in eight ended before turn thirty with
 all four still alive.
 
+Three more rules came out of watching bots hand wars away:
+
+- **A war nobody has had time to fight cannot be ended by agreement.** Once bots
+  had real armies to compare, three of four read themselves as the underdog,
+  truced their way round the table and ended the war on turn 23 with nothing
+  decided — several matches on the exact turn peace became legal. Peace becomes
+  available at turn 45. A war that goes quiet before then can be restarted by
+  somebody breaking a pact, which is a better shape for a match anyway.
+- **A truce with your only remaining enemy is quitting, not diplomacy.** Nothing
+  else can happen on the board afterwards. Half of all two-player matches ended
+  that way with one side clearly ahead. Diplomacy needs a third party to be
+  about anything, so bots do not negotiate when two players are left. Counted in
+  players, not in sides: a 2v2 truce still leaves the other enemy shooting.
+- **Weariness is about progress, not size.** "I have been at war a long time and
+  I am behind" handed won wars away from in front — a bot three times its
+  enemy's size proposed terms and the grateful loser accepted. Gating it on not
+  being behind broke the other end: a leader who could not finish the job never
+  asked for anything and four-player matches ran past 250 turns. What actually
+  distinguishes a stalled war is that nobody is *getting* anywhere, so a bot now
+  remembers the most ground it has ever held and calls the war stuck if that has
+  not budged in 40 turns. Dry Basin went from a median 219 turns with half the
+  matches unresolved back to 118 with none.
+
 **Win by destroying every enemy Command Post.** There is no turn limit. Losing
 your Command Post takes your remaining forces with it.
 
@@ -555,11 +591,60 @@ Bots march while crossing open ground and only advance once contact is near,
 which matters more than it sounds: reinforcements appear at home, so anything
 that slows an attacker across the map quietly hands the game to the defender.
 
-**Known limitation: the tiers above Moderate are not really ordered.** Measured
-over eight matches each, Moderate beats both Veteran and Cyborg. The labels are
-honest about *behaviour* — a Veteran really does mass a larger army, counter-pick
-harder and run a wider economy — but that behaviour is not currently worth more
-than Moderate's. Play Moderate if you want the stiffest opponent.
+#### The bot that bricked itself in
+
+For most of this project's life bots built almost nothing: one Barracks, a
+Command Post, an army stuck at twelve, and hundreds of supply banked. Four
+separate faults stacked up, and the last one is the interesting one.
+
+1. **A Novice built nothing at all.** The first Barracks was gated on already
+   having a Depot, and a Novice builds no Depots by definition. Measured at turn
+   100: one Command Post, an army of twelve, 305 supply in the bank, not one
+   structure placed all match. A beginners' opponent should be beatable, not
+   inert.
+2. **One builder was the ceiling on everything.** An Engineer parked on a
+   resource node earns and never builds again, so holding exactly one back meant
+   the whole construction programme ran at one structure every five turns
+   however rich the bot was. The banked supply was never a shortage of things
+   worth buying; it was a shortage of hands. The corps is sized by the treasury
+   now, and drafts from whoever is *not* earning first.
+3. **Production did not scale with the economy.** The number of Barracks was a
+   flat constant per skill — two for a Moderate. A Barracks turns out a unit
+   every couple of turns and an army of thirty in contact loses several a turn,
+   so two doors is a queue. It is worked out from the army cap the bot has
+   actually reached now.
+4. **Bots walled themselves in with their own buildings.** Sites were chosen by
+   closeness to the Command Post and nothing else, and movement here is
+   four-directional, so a ring of Depots is a wall. At turn 150 of a duel a
+   Veteran with eleven Depots, six Barracks and an army of sixty had *every one*
+   of its thirty-five fighters with no route to the enemy at all. It ordered the
+   attack every single turn. The enemy Command Post finished the match at full
+   health. This was the whole of "the AI doesn't seem to want to win": it wanted
+   to, and it had bricked itself in. Sites now leave the Command Post a moat and
+   are rejected if they close the pocket — and the escape test counts structures
+   and terrain, never bodies, because a crowd in a doorway is not a wall.
+
+Together, on a four-player Dry Basin: a Veteran that used to finish 100 turns
+with one Depot and no Barracks now runs five Depots, three Barracks, three Sentry
+Towers and a Field Hospital, and the peak army across a match went from about 60
+to about 130. Bots also raise Sentry Towers now, which they never did — eight
+supply for something that shoots three tiles and never retreats is the best
+trade on the board, and they were walking infantry into walled bases without it.
+
+**Known limitation: the tiers above Moderate are not really ordered**, and this
+work made it worse rather than better. Moderate now beats both Veteran and
+Cyborg in 11 games of 12, where it used to be 8 of 12. The labels are honest
+about *behaviour* — a Veteran really does mass a larger army, counter-pick harder
+and run a wider economy — but that behaviour is still not worth more than
+Moderate's, and the gap is wider now that everyone builds properly. Play
+Moderate if you want the stiffest opponent.
+
+Hand-testing has ruled out the obvious suspects one at a time: crippling
+Moderate to one Engineer and one Barracks does not stop it beating Veteran, and
+switching Veteran's Airfield off does not change a single match outcome. It is
+not the economy and it is not the support game. The per-tier numbers are exactly
+what `tools/tune.py` searches, so the honest next step is to re-run that search
+against the fixed code rather than nudge constants by hand.
 
 The obvious culprit is caution, and it is not: sweeping the "gather this many
 fighters before committing" threshold across every value from 3 to 7 leaves the
@@ -657,7 +742,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 312 tests
+python3 -m pytest          # 324 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

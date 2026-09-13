@@ -429,12 +429,21 @@ class Renderer:
         dest.blit(self.fog, Board.VIEW.topleft)
 
     def draw_nodes(self, dest: pygame.Surface, node_owner: dict,
-                   colors: dict) -> None:
-        """Supply crates on each node, painted in its holder's colours."""
+                   colors: dict, visible=frozenset(), mine: int = -1) -> None:
+        """Supply crates on each node, painted in its holder's colours.
+
+        Whose colours, though, is live information. Explored ground stays drawn
+        under a dim veil rather than blacked out, so a crate painted in its
+        current holder's colour reported "somebody just took that node" from
+        the other side of the map. A node you cannot currently see is drawn
+        neutral unless it is yours.
+        """
         for tile in self.board.map.nodes:
             if not self.board.on_screen(tile):
                 continue
             owner = node_owner.get(tile)
+            if owner != mine and tile not in visible:
+                owner = None
             colour = C_NODE if owner is None else team_color(colors.get(owner, 0))
             sprite = self.sprites.node(colour)
             x, y = self.board.to_screen(tile)

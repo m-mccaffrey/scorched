@@ -47,9 +47,6 @@ SKILLS = ("novice", "moderate", "veteran", "cyborg")
 #: that you can follow where you have got to.
 SCROLL_SPEED = 520
 
-#: How close to the edge of the board the pointer has to be to pan.
-EDGE_PAN = 12
-
 #: Supply sent by one press of the gift button. Small enough to be a gesture
 #: and large enough to matter when somebody is on the ropes.
 GIFT_SIZE = 15
@@ -108,6 +105,10 @@ class App:
         self.placing: str | None = None   # building code awaiting a site
         self.aiming: int | None = None    # Airfield bid awaiting an aim point
         self.parley = False               # the diplomacy table is open
+        #: Tooltips follow the pointer everywhere, which is exactly right
+        #: while you are learning the sprites and a curtain across the board
+        #: once you are not.
+        self.tips_on = True
         self.selected_building: int | None = None
         self.drag_anchor: tuple | None = None
         self.ready_sent = False
@@ -587,8 +588,9 @@ class App:
             self.replay.skip()
         elif key == pygame.K_RETURN and self.phase == "orders":
             self._send_ready()
-        elif key == pygame.K_a and self.selected:
-            self.status = "Attack-move: right-click a target"
+        elif key == pygame.K_i:
+            self.tips_on = not self.tips_on
+            self.status = ("Tooltips on" if self.tips_on else "Tooltips off")
         elif key == pygame.K_p and self.selected:
             self._queue_promotions()
         elif key == pygame.K_TAB:
@@ -618,17 +620,12 @@ class App:
             dy -= 1
         if keys[pygame.K_DOWN] or keys[pygame.K_s]:
             dy += 1
-        # Nudging the edge of the board with the pointer scrolls too, which is
-        # what a hand already on the mouse expects.
-        if Board.VIEW.collidepoint(self.mouse):
-            if self.mouse[0] - Board.VIEW.x < EDGE_PAN:
-                dx -= 1
-            elif Board.VIEW.right - self.mouse[0] < EDGE_PAN:
-                dx += 1
-            if self.mouse[1] - Board.VIEW.y < EDGE_PAN:
-                dy -= 1
-            elif Board.VIEW.bottom - self.mouse[1] < EDGE_PAN:
-                dy += 1
+        # The pointer used to pan the camera when it neared the edge of the
+        # board, and it had to go: every trip from the map down to the build
+        # menu crosses the bottom edge, so reaching for a button scrolled the
+        # board out from under the thing you were about to click. The keys, the
+        # minimap and Home are all deliberate; edge-pan fires whether you meant
+        # it or not.
         if dx or dy:
             step = int(SCROLL_SPEED * dt) or 1
             board.scroll_by(dx * step, dy * step)
@@ -1171,7 +1168,7 @@ class App:
         for button in self._buttons:
             button.update(self.mouse)
             button.draw(self.screen)
-        for rect, lines in self._tips:
+        for rect, lines in (self._tips if self.tips_on else ()):
             if rect.collidepoint(self.mouse):
                 draw_tooltip(self.screen, lines, self.mouse)
                 break
@@ -1366,7 +1363,9 @@ class App:
         self.screen.fill(UI_BG)
         self.screen.set_clip(Board.VIEW)
         self.renderer.draw_terrain(self.screen)
-        self.renderer.draw_nodes(self.screen, self.view.node_owner, self.colors)
+        self.renderer.draw_nodes(self.screen, self.view.node_owner,
+                                 self.colors, self.view.visible,
+                                 self.my_pid if self.my_pid is not None else -1)
         self._draw_entities()
         # The shroud is the size of the window now, not of the world, so
         # moving the camera makes it stale exactly as changing what you can
@@ -1486,7 +1485,17 @@ class App:
         if tile is None:
             return
         known = tile in self.view.explored
+        seen_now = tile in self.view.visible
         lines: list = []
+
+        # Ground nobody has scouted describes itself and nothing else. The
+        # client is handed the whole terrain map so it can draw it under fog,
+        # which made this tooltip a perfect scouting instrument: run the
+        # pointer over the black and it named the terrain, and told you where
+        # every resource node was and who held it. Fog you can read is not fog.
+        if not known:
+            self._tips.append((board.rect(tile), [("Unscouted", UI_DIM, 15)]))
+            return
 
         unit = self.view.unit_at(tile) or self.view.remembered.get(
             next((uid for uid, g in self.view.remembered.items()
@@ -1542,7 +1551,12 @@ class App:
                 lines.append((note, UI_DIM, 14))
             if board.map.is_node(tile[0], tile[1]):
                 holder = self.view.node_owner.get(tile)
-                if holder is None:
+                mine = holder is not None and holder == self.my_pid
+                if not seen_now and not mine:
+                    # Who holds it *now* is live information, and a node you
+                    # scouted an hour ago is not a live report.
+                    lines.append(("Out of sight", UI_DIM, 14))
+                elif holder is None:
                     lines.append(("Unclaimed", UI_ACCENT, 14))
                 else:
                     who = self.players.get(holder, {}).get("name", "?")
@@ -1552,8 +1566,6 @@ class App:
                               UI_GOOD, 14))
                 lines.append((f"...and a depot within {HARVEST_RADIUS} tiles",
                               UI_DIM, 13))
-            if not known:
-                lines.append(("Unscouted", UI_DIM, 13))
 
         self._tips.append((board.rect(tile), lines))
 
@@ -1984,18 +1996,23 @@ class App:
                      SCREEN_W // 2, 136, 14, UI_DIM, anchor="center")
         self._button((SCREEN_W // 2 - 150, 176, 140, 30), "Resume", "resume")
         self._button((SCREEN_W // 2 + 10, 176, 140, 30), "Leave Game", "leave")
-        card = pygame.Rect(SCREEN_W // 2 - 170, 224, 340, 132)
-        ui.draw_panel(self.screen, card)
+        # Eleven lines is what fits above the foot of a 400-pixel screen, so
+        # the three single-key toggles share one.
         lines = [
             "left-click        select a unit or building",
             "drag              box-select an army",
             "right-click       move there",
             "shift+right       attack-move there",
             "Tab               select your whole army",
+            "WASD / arrows     move the camera",
+            "Home              back to your Command Post",
             "Enter             commit your orders",
             "Space             skip a replay",
+            "G / P / I         parley, promote, tooltips",
             "T                 chat",
         ]
+        card = pygame.Rect(SCREEN_W // 2 - 170, 210, 340, len(lines) * 15 + 16)
+        ui.draw_panel(self.screen, card)
         y = card.y + 8
         for line in lines:
             ui.draw_text(self.screen, line, card.x + 12, y, 14, UI_TEXT)

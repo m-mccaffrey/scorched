@@ -44,7 +44,7 @@ PER_TIER = {
     "mass_at":      (2, 10, True),
     "counter_pick": (0.0, 1.0, False),
     "workers":      (1, 6, True),
-    "barracks":     (1, 4, True),
+    "barracks":     (1, 8, True),
     "supports":     (0, 2, True),
 }
 
