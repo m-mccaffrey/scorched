@@ -31,20 +31,28 @@ HARVEST_RADIUS = 5
 #: side could ever field enough to crack a Command Post. Matches went from a
 #: 32-turn median to unresolved. The base is now sized for an army *including*
 #: its labour.
-#:
-#: The ceiling used to sit at 24, three Depots' worth, and that turned out to
-#: be where a real game stops being about decisions: by the time both sides
-#: have an economy running, every match is two full armies of exactly the same
-#: size trading into each other with a thousand supply banked and nowhere to
-#: put it. Raising it to 40 costs nothing in pacing -- measured across five
-#: matchups, match length and win rates were identical at 24, 32, 40 and 64 --
-#: because what actually ends a match is the economy, not the ceiling. It is
-#: still a ceiling, though: resolution cost grows with the square of the units
-#: on the board, and 40 a side is about where a Pi 400 can still resolve a turn
-#: without a visible pause.
 ARMY_CAP_BASE = 12
 DEPOT_CAP = 4
-ARMY_CAP_MAX = 40
+
+#: The ceiling on an army, as a match setting rather than a constant.
+#:
+#: It sat at 24 until it was measured, and it turned out not to be doing the
+#: job it was put there for: across five matchups at 24, 32, 40 and 64, match
+#: length, unresolved rate and win rates came out identical. What ends a match
+#: is the economy. All a low ceiling bought was a late game with no decisions
+#: in it, both sides at the same maximum army with a thousand supply banked.
+#:
+#: What does argue for a ceiling is the clock, because cost is quadratic in
+#: the units on the board: doubling them costs about 3.6x a turn. Measured on
+#: a four-sided continent, 160 units resolve in 72ms and 640 in 820ms.
+#:
+#: The bounds below are what a Pi 400 can carry rather than what the rules
+#: need. The default is 60 because that is roughly where bots stop being able
+#: to build enough Supply Depots to use any more: raising the roof above it
+#: changes the peak army not at all.
+ARMY_CAP_DEFAULT = 60
+ARMY_CAP_FLOOR = 40
+ARMY_CAP_ROOF = 90
 
 #: Units that can properly demolish a barricade. Everyone else can chip at it,
 #: at a quarter rate -- enough that a wall is never an absolute full stop, far
@@ -359,7 +367,7 @@ def catalogue() -> list[dict]:
     return rows
 
 
-def army_cap(structure_codes) -> int:
+def army_cap(structure_codes, ceiling: int = ARMY_CAP_DEFAULT) -> int:
     """Army supported by the structures a player currently has standing."""
     total = sum(BUILDING[code].supply_cap for code in structure_codes)
-    return min(ARMY_CAP_MAX, total)
+    return min(ceiling, total)

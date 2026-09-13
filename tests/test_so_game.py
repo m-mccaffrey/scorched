@@ -463,3 +463,21 @@ def test_a_long_war_starts_looking_for_terms():
     offers = [o for o in weary if o["o"] == "propose"]
     assert offers, "a bot in a long war never asks for terms"
     assert len(offers) > len([o for o in early if o["o"] == "propose"])
+
+
+def test_the_lobby_army_cap_governs_what_a_player_can_field():
+    """The slider is worthless if the match ignores it: the ceiling has to
+    reach MatchState, and it has to reach the *new* board built at kickoff,
+    not the throwaway one the lobby was sitting on."""
+    from standing_orders.units import ARMY_CAP_FLOOR, ARMY_CAP_ROOF
+
+    for asked in (ARMY_CAP_FLOOR, 60, ARMY_CAP_ROOF):
+        match = started(2, army_cap=asked)
+        assert match.state.army_ceiling == asked
+        # Enough depots to blow past any ceiling, so the cap *is* the ceiling.
+        from standing_orders.units import army_cap
+        assert army_cap(["depot"] * 40, match.state.army_ceiling) == asked
+
+    assert Settings(army_cap=1).clamp().army_cap == ARMY_CAP_FLOOR
+    assert Settings(army_cap=999).clamp().army_cap == ARMY_CAP_ROOF
+    assert Settings().army_cap == 60

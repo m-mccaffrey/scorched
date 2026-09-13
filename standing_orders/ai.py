@@ -19,10 +19,9 @@ from dataclasses import dataclass
 from .fog import VisionCache, team_vision
 from .grid import chebyshev, manhattan
 from .resolve import PACT_BINDING
-from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, ARMY_CAP_BASE,
-                    ARMY_CAP_MAX, BUILDING, DEPOT_CAP, HARVEST_RADIUS, UNIT,
-                    available_research, cost_of_building, max_rank,
-                    promotion_cost)
+from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, ARMY_CAP_BASE, BUILDING,
+                    DEPOT_CAP, HARVEST_RADIUS, UNIT, available_research,
+                    cost_of_building, max_rank, promotion_cost)
 
 @dataclass(frozen=True)
 class Skill:
@@ -471,10 +470,10 @@ class BotBrain:
         #     only counts finished ones -- without that a bot kept queueing
         #     more every turn and finished with seventeen Depots, which is
         #     fifteen more than the ceiling can use.
-        enough = -(-(ARMY_CAP_MAX - ARMY_CAP_BASE) // DEPOT_CAP)
+        enough = -(-(state.army_ceiling - ARMY_CAP_BASE) // DEPOT_CAP)
         if (SKILLS[self.skill].expands and len(depots) < enough
                 and state.army_size(me.pid) >= state.army_cap_of(me.pid)
-                and state.army_cap_of(me.pid) < ARMY_CAP_MAX):
+                and state.army_cap_of(me.pid) < state.army_ceiling):
             price = cost_of_building("depot", me.research)
             if budget >= price + EXPAND_SURPLUS:
                 worker = hands_for(price, EXPAND_SURPLUS)

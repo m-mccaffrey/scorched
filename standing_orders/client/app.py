@@ -444,6 +444,8 @@ class App:
             settings.start_supply = max(0, min(60, settings.start_supply + step * 5))
         elif field == "clock":
             settings.order_time = max(0, min(300, settings.order_time + step * 15))
+        elif field == "armycap":
+            settings.army_cap += step * 10
         settings.clamp()
 
     def _events_browse(self, event) -> None:
@@ -1225,6 +1227,7 @@ class App:
                 ("Starting supply", str(self.settings.start_supply), "supply"),
                 ("Order clock", f"{self.settings.order_time}s"
                  if self.settings.order_time else "off", "clock"),
+                ("Army cap", str(self.settings.army_cap), "armycap"),
                 ("Computer players", str(self._bots), "bots"),
                 ("Bot skill", self._skill.title(), "skill")]
         y = panel.y + 12
@@ -1324,7 +1327,8 @@ class App:
                 ("Teams", "2v2" if self.settings.teams else "FFA", "teams"),
                 ("Supply", str(self.settings.start_supply), "supply"),
                 ("Clock", f"{self.settings.order_time}s"
-                 if self.settings.order_time else "off", "clock")]
+                 if self.settings.order_time else "off", "clock"),
+                ("Army cap", str(self.settings.army_cap), "armycap")]
         ry = rules.y + 26
         for label, value, field in rows:
             ui.draw_text(self.screen, label, rules.x + 10, ry + 2, 16, UI_TEXT)

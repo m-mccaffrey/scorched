@@ -255,9 +255,11 @@ that stops mattering: bots cannot build enough Supply Depots to exceed about
 200 units between four of them, so a ceiling above 60 changes nothing at all.
 Going 40 to 60 buys roughly 40% more army for roughly 20% more time a turn.
 
-**The army cap starts at 12 and grows by 4 per Supply Depot, to 40.** Engineers
-count against it, so every worker is one fewer soldier — that tension is what
-makes the economy a decision rather than free money. And because depots raise
+**The army cap starts at 12 and grows by 4 per Supply Depot, up to a ceiling
+the lobby sets.** That ceiling is the *Army cap* setting — 40 to 90 in steps of
+10, defaulting to 60 — so the table can decide how big a war it wants to sit
+through. Engineers count against it, so every worker is one fewer soldier —
+that tension is what makes the economy a decision rather than free money. And because depots raise
 the ceiling, an economy buys you a *bigger army*, not merely a faster-rebuilt
 one. Some cap is essential either way: without one, two even sides reinforce
 exactly as fast as they die and the match never ends.
@@ -655,7 +657,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 311 tests
+python3 -m pytest          # 312 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

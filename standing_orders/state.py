@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .grid import TileMap, chebyshev
-from .units import (BUILDING, HARVEST_RADIUS, UNIT, army_cap, harvest_rate,
-                    hp_bonus)
+from .units import (ARMY_CAP_DEFAULT, BUILDING, HARVEST_RADIUS, UNIT,
+                    army_cap, harvest_rate, hp_bonus)
 
 MAX_PLAYERS = 4
 
@@ -155,6 +155,8 @@ class MatchState:
         self.node_owner: dict = {}
         self._next_uid = 1
         self._next_bid = 1
+        #: The largest army anybody may field, set for the match in the lobby.
+        self.army_ceiling = ARMY_CAP_DEFAULT
         #: Standing agreements, keyed by sorted pid pair. Absent means war.
         self.pacts: dict = {}
         #: The turn each agreement was signed, so one cannot be torn up the
@@ -323,7 +325,8 @@ class MatchState:
     def army_cap_of(self, pid: int) -> int:
         """How large an army this player's standing structures support."""
         return army_cap([b.code for b in self.buildings.values()
-                         if b.owner == pid and b.operational])
+                         if b.owner == pid and b.operational],
+                        self.army_ceiling)
 
     def army_size(self, pid: int) -> int:
         """Living units plus everything queued -- the cap counts both."""

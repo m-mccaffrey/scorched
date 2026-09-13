@@ -14,6 +14,7 @@ from .fog import VisionCache, filter_events, team_vision, visible_state
 from .grid import TileMap
 from .resolve import SUBTICKS, resolve_turn
 from .state import MAX_PLAYERS, MatchState, Player
+from .units import ARMY_CAP_DEFAULT, ARMY_CAP_FLOOR, ARMY_CAP_ROOF
 from .units import BUILDING, UNIT
 
 PHASE_LOBBY = "lobby"
@@ -39,16 +40,24 @@ class Settings:
     #: rather than an obstacle to it. The turn still resolves the moment
     #: everyone commits, so a quiet turn costs nobody the full two minutes.
     order_time: int = 120
+    #: The largest army anybody may field. Cost is quadratic in the units on
+    #: the board, so this is the one setting that really moves what a turn
+    #: costs -- and above about 60 it stops mattering anyway, because nobody
+    #: can build enough Supply Depots to use the room.
+    army_cap: int = ARMY_CAP_DEFAULT
 
     def clamp(self) -> "Settings":
         self.start_supply = max(0, min(200, int(self.start_supply)))
         self.order_time = max(0, min(600, int(self.order_time)))
+        self.army_cap = max(ARMY_CAP_FLOOR, min(ARMY_CAP_ROOF,
+                                                int(self.army_cap)))
         self.teams = bool(self.teams)
         return self
 
     def to_wire(self) -> dict:
         return {"map_name": self.map_name, "teams": self.teams,
-                "start_supply": self.start_supply, "order_time": self.order_time}
+                "start_supply": self.start_supply,
+                "order_time": self.order_time, "army_cap": self.army_cap}
 
     @classmethod
     def from_wire(cls, data: dict) -> "Settings":
@@ -145,6 +154,7 @@ class Match:
         # state object we are about to replace.
         roster = sorted(self.state.players.values(), key=lambda p: p.pid)
         self.state = MatchState(load_map(self.settings.map_name))
+        self.state.army_ceiling = self.settings.army_cap
         for player in roster:
             self.state.players[player.pid] = player
         self._reassign_teams()
