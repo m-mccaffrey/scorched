@@ -1217,3 +1217,41 @@ def test_a_unit_crosses_a_continent():
             break
         resolve_turn(state, {}, vision=False)
     assert scout.tile == goal, f"stalled at {scout.tile}"
+
+
+def test_an_engineer_gives_up_on_a_site_it_cannot_reach():
+    """A build job with no way to the site used to occupy an Engineer for the
+    rest of the match. One bot spent ninety turns with a third of its labour
+    walking toward a site it would never arrive at, could free nobody to build
+    anything else, and banked eleven hundred supply behind an army stuck at
+    its cap."""
+    from standing_orders.resolve import JOB_PATIENCE
+
+    rows = ["." * 20 for _ in range(9)]
+    rows[4] = "." * 9 + "#" + "." * 10        # a wall down the middle
+    for y in range(9):
+        rows[y] = rows[y][:9] + "#" + rows[y][10:]
+    rows[0] = "1" + rows[0][1:]
+    rows[-1] = rows[-1][:-1] + "2"
+    state = MatchState(TileMap.parse("!players 2\n" + "\n".join(rows)))
+    for pid in range(2):
+        state.players[pid] = Player(pid=pid, name=f"P{pid}", team=pid,
+                                    color=pid, supply=60)
+        state.add_building(pid, "base", 1 + pid * 2, 8)
+
+    worker = state.add_unit(0, "worker", 3, 4)
+    unreachable = (15, 4)                      # the far side of the wall
+    before = state.players[0].supply
+    _, rejected = resolve_turn(
+        state, {0: [{"o": "build", "uid": worker.uid, "code": "depot",
+                     "to": list(unreachable)}]})
+    if rejected.get(0):
+        pytest.skip("the order was refused outright, which is also fine")
+
+    assert worker.job is not None
+    assert state.players[0].supply < before, "the build was paid for"
+
+    for _ in range(JOB_PATIENCE + 2):
+        resolve_turn(state, {})
+    assert worker.job is None, "the Engineer is still walking to nowhere"
+    assert state.players[0].supply >= before - 2, "and never got its money back"

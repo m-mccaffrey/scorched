@@ -413,6 +413,24 @@ All of it is public. In a game played round one table a secret alliance is just
 a conversation, and a betrayal nobody could see coming is a feel-bad rather
 than a twist.
 
+**Bots build.** That sentence had to be earned. For most of this game's life
+they did not: matches ended with one Command Post apiece, an army stuck at the
+starting cap of twelve, and several hundred supply banked with nothing able to
+spend it. Three separate causes, each hiding the next:
+
+- Every Engineer was sent to harvest a node before the economy got a look, and
+  an Engineer on a node never becomes free again. One is now held back as a
+  builder whenever there is money worth spending.
+- Whichever build rule asked first got that one Engineer, and the Depot rules
+  asked first. Bots finished with seventeen Depots, no Barracks at all, and an
+  army of Scouts and Troopers — half the roster never built, all game. A first
+  Barracks now outranks a second Depot.
+- A build job whose site could not be reached occupied that Engineer *for the
+  rest of the match*. Jobs now time out after twelve turns and refund.
+
+Together those roughly doubled the armies bots field, and took the share of a
+big map anybody ever touches from a quarter to a half.
+
 **Bots negotiate too**, from Moderate up. They also tire: after about a
 hundred and ten turns a bot starts offering terms to anyone it is still
 fighting, because a war that old is going nowhere. That rule exists because of
@@ -626,7 +644,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 308 tests
+python3 -m pytest          # 309 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

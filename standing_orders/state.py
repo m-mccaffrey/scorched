@@ -32,6 +32,9 @@ class Unit:
     rerouted: bool = False
     #: An Engineer's outstanding construction job: (building code, tile).
     job: tuple | None = None
+    #: Turns spent trying to reach that site. A job that never arrives used to
+    #: occupy an Engineer permanently.
+    job_age: int = 0
     #: Promotions earned, 0 through ``units.max_rank()``.
     rank: int = 0
     #: Has this unit fought since its last promotion? Supply alone does not

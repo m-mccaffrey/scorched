@@ -19,9 +19,10 @@ from dataclasses import dataclass
 from .fog import VisionCache, team_vision
 from .grid import chebyshev, manhattan
 from .resolve import PACT_BINDING
-from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, ARMY_CAP_MAX, BUILDING,
-                    HARVEST_RADIUS, UNIT, available_research,
-                    cost_of_building, max_rank, promotion_cost)
+from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, ARMY_CAP_BASE,
+                    ARMY_CAP_MAX, BUILDING, DEPOT_CAP, HARVEST_RADIUS, UNIT,
+                    available_research, cost_of_building, max_rank,
+                    promotion_cost)
 
 @dataclass(frozen=True)
 class Skill:
@@ -77,6 +78,14 @@ EXPAND_SURPLUS = 26
 RESEARCH_BUFFER = 20
 
 DEFEND_RADIUS = 7
+
+#: Supply at which a bot holds an Engineer back from harvesting to build with.
+#: Roughly a Depot and change: below this there is nothing to build anyway.
+BUILD_RESERVE = 12
+
+#: Supply at which a bot will pull even its last harvesting Engineer off a
+#: node to build with. A treasury this size is not short of income.
+DEADLOCK_SUPPLY = 60
 
 #: How much stronger somebody has to be before a bot will ask them for terms,
 #: and how much weaker before it considers tearing a pact up. Asymmetric on
@@ -302,13 +311,22 @@ class BotBrain:
 
         Returns the orders and the set of Engineers now spoken for, so the
         economy does not hand the same worker a building job as well.
+
+        One Engineer is held back as a builder whenever there is money worth
+        spending. This step used to claim every free Engineer for a node
+        before the economy got a look, and since an Engineer on a node never
+        becomes free again, that was the whole reason bots finished matches
+        with one building, an army capped at twelve and three hundred supply
+        they could not spend.
         """
         state = match.state
         receivers = state.receivers_of(me.pid)
         orders: list = []
         busy: set = set()
         taken = {(u.x, u.y) for u in my_units if u.builder}
-        for worker in [u for u in my_units if u.builder]:
+        crew = [u for u in my_units if u.builder]
+        spare = 1 if (me.supply >= BUILD_RESERVE and len(crew) > 1) else 0
+        for worker in crew:
             if worker.job is not None:
                 busy.add(worker.uid)
                 continue
@@ -317,6 +335,8 @@ class BotBrain:
                     for r in receivers):
                 busy.add(worker.uid)           # already earning; leave it be
                 continue
+            if spare and worker is crew[-1]:
+                continue                   # keep the last one holding a shovel
             node = self._workable_node(state, me, worker, receivers, taken)
             if node is not None:
                 taken.add(node)
@@ -382,15 +402,24 @@ class BotBrain:
                 return idle_workers[0]
             if budget < price + pull_at:
                 return None
-            # Never take the last Engineer off the last node -- somebody has
-            # to stay and work, or the surplus that justified this dries up.
             free = [w for w in workers
                     if w is not None and w.job is None and w.uid not in busy]
             spare = [w for w in free if w.uid not in earning]
             if spare:
                 return spare[0]
+            # Normally somebody has to stay and work, or the surplus that
+            # justified this dries up. The exception is a deadlock that bots
+            # genuinely got stuck in: at the army cap you cannot train another
+            # Engineer, with one Engineer and it harvesting you cannot build a
+            # Depot, and without a Depot the cap never rises. One bot sat in
+            # that with eleven hundred supply banked. When the treasury is
+            # that full the harvest is the cheapest thing to give up.
             earners = [w for w in free if w.uid in earning]
-            return earners[0] if len(earners) > 1 else None
+            if not earners:
+                return None
+            stuck = (state.army_size(me.pid) >= state.army_cap_of(me.pid)
+                     and budget >= DEADLOCK_SUPPLY)
+            return earners[0] if len(earners) > 1 or stuck else None
 
         def commit(worker, code: str, site) -> None:
             if worker in idle_workers:
@@ -399,9 +428,27 @@ class BotBrain:
             orders.append({"o": "build", "uid": worker.uid, "code": code,
                            "to": list(site)})
 
-        # 1. A depot wherever we are working, or want to work, a node. Without
+        # 1. Barracks: the gate to the counter triangle. Gated on already
+        #    having a Depot, so nobody opens with one and spends the match on
+        #    one supply a turn -- but *ahead* of building any more Depots,
+        #    because there is exactly one free Engineer and whichever rule
+        #    asks first gets it. When the Depot rules asked first, bots
+        #    finished with seventeen Depots, no Barracks at all, and an army
+        #    of Scouts and Troopers: half the roster never built, all game.
+        price = cost_of_building("barracks", me.research)
+        if not barracks and depots and budget >= price + BARRACKS_BUFFER:
+            worker = hands_for(price, BARRACKS_BUFFER)
+            site = self._site_near(state, bases[0].tile, radius=4)
+            if worker is not None and site is not None:
+                commit(worker, "barracks", site)
+                budget -= price
+
+        # 2. A depot wherever we are working, or want to work, a node. Without
         #    one in range the Engineer standing on the node sends nothing.
-        for worker in (list(idle_workers) if SKILLS[self.skill].expands else []):
+        for worker in ([hands_for(cost_of_building("depot", me.research), 0)]
+                       if SKILLS[self.skill].expands else []):
+            if worker is None:
+                break
             node = self._node_needing_depot(state, me, worker, depots + bases)
             price = cost_of_building("depot", me.research)
             if node is None or budget < price:
@@ -420,34 +467,30 @@ class BotBrain:
         #     the ceiling can still rise, and there is money doing nothing,
         #     the answer is another depot -- anywhere safe will do, since this
         #     one is bought for its supply_cap and not its reach.
-        if (SKILLS[self.skill].expands and idle_workers
+        #     Counting what is already standing *or* going up, because the cap
+        #     only counts finished ones -- without that a bot kept queueing
+        #     more every turn and finished with seventeen Depots, which is
+        #     fifteen more than the ceiling can use.
+        enough = -(-(ARMY_CAP_MAX - ARMY_CAP_BASE) // DEPOT_CAP)
+        if (SKILLS[self.skill].expands and len(depots) < enough
                 and state.army_size(me.pid) >= state.army_cap_of(me.pid)
                 and state.army_cap_of(me.pid) < ARMY_CAP_MAX):
             price = cost_of_building("depot", me.research)
             if budget >= price + EXPAND_SURPLUS:
+                worker = hands_for(price, EXPAND_SURPLUS)
                 site = self._site_near(state, bases[0].tile, radius=4)
-                if site is not None:
-                    commit(idle_workers[0], "depot", site)
+                if worker is not None and site is not None:
+                    commit(worker, "depot", site)
                     budget -= price
-
-        # 2. Barracks: the gate to the counter triangle -- but only once the
-        #    economy is running. Opening with a Barracks instead of a depot
-        #    leaves a bot on one supply a turn for the rest of the match.
-        price = cost_of_building("barracks", me.research)
-        if (not barracks and idle_workers and depots
-                and budget >= price + BARRACKS_BUFFER):
-            site = self._site_near(state, bases[0].tile, radius=4)
-            if site is not None:
-                commit(idle_workers[0], "barracks", site)
-                budget -= price
 
         # 3. More production once the economy outruns one Barracks.
         price = cost_of_building("barracks", me.research)
         if (barracks and len(barracks) < SKILLS[self.skill].barracks
-                and idle_workers and budget >= price + EXPAND_SURPLUS):
+                and budget >= price + EXPAND_SURPLUS):
+            worker = hands_for(price, EXPAND_SURPLUS)
             site = self._site_near(state, bases[0].tile, radius=5)
-            if site is not None:
-                commit(idle_workers[0], "barracks", site)
+            if worker is not None and site is not None:
+                commit(worker, "barracks", site)
                 budget -= price
 
         # 3b. Support buildings, once there is an army worth supporting. A
@@ -585,7 +628,13 @@ class BotBrain:
 
         # Engineers first: no economy without them, and the army cap cannot
         # grow until somebody is free to raise a depot.
-        wanted = SKILLS[self.skill].workers
+        # One more Engineer than there are nodes to work, because an Engineer
+        # standing on a node is *employed* -- it harvests, it cannot build, and
+        # it never becomes free again. Bots measured zero spare Engineers from
+        # turn 25 onward, which meant no Depots, no Barracks, an army capped at
+        # twelve for the whole match and three hundred supply banked with
+        # nothing able to spend it. Somebody has to be holding a shovel.
+        wanted = SKILLS[self.skill].workers + 1
         if len(state.receivers_of(me.pid)) > 2:
             wanted += 1
         if len(workers) < wanted:

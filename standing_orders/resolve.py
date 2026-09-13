@@ -348,6 +348,7 @@ def _apply_one(state: MatchState, player, order: dict, occupancy: dict,
         # refunded if the site is taken by the time the Engineer arrives.
         player.supply -= price
         unit.job = (code, target)
+        unit.job_age = 0
         unit.stance = "hold"
         unit.goal = target
         path = _route(state.map, unit.tile, target, blocked, routes)
@@ -435,6 +436,17 @@ PACTS = ("truce", "alliance")
 #: what makes signing a decision, and what makes a betrayal ten turns later
 #: feel like a betrayal rather than a rounding error.
 PACT_BINDING = 10
+
+#: Turns an Engineer will keep trying to reach a building site before giving
+#: up and asking for its money back.
+#:
+#: Without a limit, a job whose site cannot be reached -- across water, behind
+#: a wall that went up on the way, or simply too far -- occupied that Engineer
+#: for the rest of the match. One bot spent ninety turns with a third of its
+#: labour force walking toward a site it would never arrive at, could not free
+#: an Engineer to build anything else, and banked eleven hundred supply while
+#: its army sat at the cap of sixteen.
+JOB_PATIENCE = 12
 
 
 def _diplomacy(state: MatchState, player, order: dict, kind: str,
@@ -915,6 +927,7 @@ class Resolver:
                 building.building_turns -= 1
                 if building.building_turns == 0:
                     builder.job = None
+                    builder.job_age = 0
                     self.result.add(beat, "ready", bid=building.bid,
                                     at=list(building.tile), code=building.code)
                 continue
@@ -978,6 +991,16 @@ class Resolver:
                 continue
             code, target = unit.job
             if chebyshev(unit.tile, target) > 1:
+                unit.job_age += 1
+                if unit.job_age > JOB_PATIENCE:
+                    player = self.state.players.get(unit.owner)
+                    if player is not None:
+                        player.supply += cost_of_building(code, player.research)
+                    unit.job = None
+                    unit.job_age = 0
+                    unit.goal = None
+                    self.result.add(beat, "nosite", uid=unit.uid,
+                                    at=list(target))
                 continue                       # still walking
             existing = self.occupancy.get(target)
             if existing is not None:
@@ -989,6 +1012,7 @@ class Resolver:
                 if player is not None:
                     player.supply += cost_of_building(code, player.research)
                 unit.job = None
+                unit.job_age = 0
                 self.result.add(beat, "nosite", uid=unit.uid, at=list(target))
                 continue
             done = self.state.players[unit.owner].research \
