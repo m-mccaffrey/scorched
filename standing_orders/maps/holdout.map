@@ -1,0 +1,29 @@
+!name The Holdout
+!players 4
+!mode holdout
+!notes One town, four doors. Everything worth having is outside them.
+; A co-operative map: commanders start inside a walled town with a gap in each
+; wall, and the waves walk in at the gates. Those four doorways are the whole
+; game. Every resource node is outside the wall, so an economy is something you
+; have to go out and hold rather than something you are handed.
+################G###############
+#..............................#
+#....$....................$....#
+#........%%.....$....%%........#
+#.............%...%............#
+#..............................#
+#.......$..#####.####..$.......#
+#..........#........#..........#
+#..%.......#..1..2..#.......%..#
+#..........#........#..........#
+G....$....................$....G
+#..........#........#..........#
+#..%.......#..3..4..#.......%..#
+#..........#........#..........#
+#.......$..#####.####..$.......#
+#..............................#
+#.............%...%............#
+#........%%.....$....%%........#
+#....$....................$....#
+#..............................#
+################G###############

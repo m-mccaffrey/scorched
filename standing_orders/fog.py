@@ -151,4 +151,13 @@ def visible_state(state, viewer_pid: int, vision: frozenset) -> dict:
         "armistice": sorted(state.armistice),
         "ground": {str(p.pid): state.holding(p.pid)
                    for p in state.players.values() if p.alive},
+        # Holdout. Public on purpose: the schedule is something a table is
+        # meant to learn and plan around, not a surprise.
+        "mode": state.mode,
+        "wave": state.wave_at,
+        "waves": len(state.waves),
+        "next_wave": (state.waves[state.wave_at]["at"]
+                      if state.wave_at < len(state.waves) else 0),
+        "next_pack": (state.waves[state.wave_at]["pack"]
+                      if state.wave_at < len(state.waves) else []),
     }

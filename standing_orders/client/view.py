@@ -28,6 +28,12 @@ class WorldView:
         self.breaking: set = set()
         self.armistice: set = set()
         self.ground: dict = {}
+        #: Holdout: which wave is next, when it lands and what is in it.
+        self.mode: str = "war"
+        self.wave: int = 0
+        self.waves: int = 0
+        self.next_wave: int = 0
+        self.next_pack: list = []
         #: uid -> True when the unit is facing left. Kept outside the unit
         #: dicts because those are rebuilt from scratch every state sync.
         self.facing: dict[int, bool] = {}
@@ -56,6 +62,11 @@ class WorldView:
         self.breaking = {tuple(pair) for pair in state.get("breaking", [])}
         self.armistice = set(state.get("armistice", []))
         self.ground = {int(k): v for k, v in state.get("ground", {}).items()}
+        self.mode = state.get("mode", self.mode)
+        self.wave = state.get("wave", self.wave)
+        self.waves = state.get("waves", self.waves)
+        self.next_wave = state.get("next_wave", self.next_wave)
+        self.next_pack = state.get("next_pack", self.next_pack)
         # A remembered unit standing on ground we can now see is simply gone.
         for uid in [u for u, g in self.remembered.items()
                     if (g["x"], g["y"]) in self.visible]:

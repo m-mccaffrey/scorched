@@ -24,7 +24,7 @@ from lanlib.theme import (UI_ACCENT, UI_BG, UI_DIM, UI_GOOD,
                           UI_PANEL, UI_PANEL_HI, UI_PANEL_LO, UI_TEXT, UI_WARN,
                           shade, team_color)
 
-from ..game import Settings, available_maps
+from ..game import Settings, available_maps, map_modes
 from ..grid import TileMap, describe, find_path
 from ..server import GAME_ID, SO_PORT, Server
 from ..state import MAX_PLAYERS
@@ -89,6 +89,9 @@ class App:
         self.colors: dict[int, int] = {}
         self.settings = Settings()
         self.maps = available_maps()
+        #: Map name -> "war" or "holdout". The lobby has to know which rules a
+        #: map brings before anyone has started a match under them.
+        self.map_modes = map_modes()
         self.catalogue = catalogue()
         self.phase = "lobby"
         self.turn = 0
@@ -268,6 +271,7 @@ class App:
             self.server_name = msg.get("server", "")
             self.catalogue = msg.get("catalogue", self.catalogue)
             self.maps = msg.get("maps", self.maps)
+            self.map_modes = msg.get("modes", self.map_modes)
             self.settings = Settings.from_wire(msg.get("settings", {}))
 
         elif kind == "host":
@@ -277,6 +281,7 @@ class App:
             self._sync_players(msg.get("players", []))
             self.settings = Settings.from_wire(msg.get("settings", {}))
             self.maps = msg.get("maps", self.maps)
+            self.map_modes = msg.get("modes", self.map_modes)
             self.is_host = msg.get("host", -1) == self.my_pid
             if msg.get("phase") == "lobby":
                 self.mode = "lobby"
@@ -447,7 +452,12 @@ class App:
             settings.order_time = max(0, min(300, settings.order_time + step * 15))
         elif field == "armycap":
             settings.army_cap += step * 10
+        elif field == "waves":
+            settings.waves += step
         settings.clamp()
+
+    def _picked_holdout(self) -> bool:
+        return self.map_modes.get(self.settings.map_name, "war") == "holdout"
 
     def _events_browse(self, event) -> None:
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -597,7 +607,7 @@ class App:
             self._select_all_units()
         elif key == pygame.K_HOME:
             self._look_at_home()
-        elif key == pygame.K_g:
+        elif key == pygame.K_g and self.view.mode != "holdout":
             self.parley = not self.parley
 
     # -- camera ------------------------------------------------------------
@@ -1219,14 +1229,20 @@ class App:
                      UI_ACCENT, anchor="center")
         panel = pygame.Rect(110, 52, SCREEN_W - 220, 200)
         ui.draw_panel(self.screen, panel)
-        rows = [("Map", self.settings.map_name.title(), "map"),
-                ("Teams (4p)", "2v2" if self.settings.teams else "free-for-all", "teams"),
-                ("Starting supply", str(self.settings.start_supply), "supply"),
-                ("Order clock", f"{self.settings.order_time}s"
-                 if self.settings.order_time else "off", "clock"),
-                ("Army cap", str(self.settings.army_cap), "armycap"),
-                ("Computer players", str(self._bots), "bots"),
-                ("Bot skill", self._skill.title(), "skill")]
+        holdout = self._picked_holdout()
+        rows = [("Map", self.settings.map_name.title(), "map")]
+        # Teams mean nothing when everyone is on the same side, and the wave
+        # count means nothing when there are no waves. One row, two questions.
+        rows.append(("Waves", str(self.settings.waves), "waves") if holdout
+                    else ("Teams (4p)",
+                          "2v2" if self.settings.teams else "free-for-all",
+                          "teams"))
+        rows += [("Starting supply", str(self.settings.start_supply), "supply"),
+                 ("Order clock", f"{self.settings.order_time}s"
+                  if self.settings.order_time else "off", "clock"),
+                 ("Army cap", str(self.settings.army_cap), "armycap"),
+                 ("Computer players", str(self._bots), "bots"),
+                 ("Bot skill", self._skill.title(), "skill")]
         y = panel.y + 12
         for label, value, field in rows:
             ui.draw_text(self.screen, label, panel.x + 14, y + 3, 17, UI_TEXT)
@@ -1320,12 +1336,15 @@ class App:
         rules = pygame.Rect(326, 52, SCREEN_W - 342, 232)
         ui.draw_panel(self.screen, rules)
         ui.draw_text(self.screen, "RULES", rules.x + 8, rules.y + 6, 15, UI_DIM)
-        rows = [("Map", self.settings.map_name.title(), "map"),
-                ("Teams", "2v2" if self.settings.teams else "FFA", "teams"),
-                ("Supply", str(self.settings.start_supply), "supply"),
-                ("Clock", f"{self.settings.order_time}s"
-                 if self.settings.order_time else "off", "clock"),
-                ("Army cap", str(self.settings.army_cap), "armycap")]
+        rows = [("Map", self.settings.map_name.title(), "map")]
+        rows.append(("Waves", str(self.settings.waves), "waves")
+                    if self._picked_holdout()
+                    else ("Teams", "2v2" if self.settings.teams else "FFA",
+                          "teams"))
+        rows += [("Supply", str(self.settings.start_supply), "supply"),
+                 ("Clock", f"{self.settings.order_time}s"
+                  if self.settings.order_time else "off", "clock"),
+                 ("Army cap", str(self.settings.army_cap), "armycap")]
         ry = rules.y + 26
         for label, value, field in rows:
             ui.draw_text(self.screen, label, rules.x + 10, ry + 2, 16, UI_TEXT)
@@ -1965,12 +1984,28 @@ class App:
         ui.draw_text(self.screen, str(orders), 366, bar.y + 15, 20,
                      UI_ACCENT if orders else UI_DIM)
 
-        at_war = sum(1 for row in (self.standings or [])
-                     if row.get("alive") and row["pid"] != self.my_pid
-                     and self.view.pact_with(self.my_pid, row["pid"]) == "war")
-        ui.draw_text(self.screen, "TABLE", 418, bar.y + 4, 12, UI_DIM)
-        ui.draw_text(self.screen, f"{at_war} at war  [G]", 418, bar.y + 15, 14,
-                     UI_WARN if at_war else UI_GOOD)
+        if self.view.mode == "holdout":
+            # The schedule is public, so the only question the bar has to
+            # answer is "how long have I got" -- which is the question every
+            # decision in the mode hangs off.
+            wave, total = self.view.wave, self.view.waves
+            ui.draw_text(self.screen, "WAVE", 418, bar.y + 4, 12, UI_DIM)
+            due = self.view.next_wave - self.view.turn
+            if wave >= total:
+                note, colour = "last one", UI_GOOD
+            elif due <= 1:
+                note, colour = "INCOMING", UI_WARN
+            else:
+                note, colour = f"next in {due}", UI_TEXT
+            ui.draw_text(self.screen, f"{wave}/{total}  {note}", 418,
+                         bar.y + 15, 14, colour)
+        else:
+            at_war = sum(1 for row in (self.standings or [])
+                         if row.get("alive") and row["pid"] != self.my_pid
+                         and self.view.pact_with(self.my_pid, row["pid"]) == "war")
+            ui.draw_text(self.screen, "TABLE", 418, bar.y + 4, 12, UI_DIM)
+            ui.draw_text(self.screen, f"{at_war} at war  [G]", 418, bar.y + 15,
+                         14, UI_WARN if at_war else UI_GOOD)
 
         if self.phase == "orders" and self.replay is None:
             self._button((SCREEN_W - 130, bar.y + 8, 120, 28),

@@ -23,6 +23,7 @@ so nobody has to read out an IP address.
 - [Playing across the LAN](#playing-across-the-lan)
 - [Scorched — artillery](#scorched--artillery)
 - [Standing Orders — skirmish RTS](#standing-orders--skirmish-rts)
+- [Holdout — co-operative tower defence](#holdout--co-operative-tower-defence)
 - [How cross-platform play works](#how-cross-platform-play-works)
 - [Performance on a Pi 400](#performance-on-a-pi-400)
 - [Command line](#command-line)
@@ -228,8 +229,8 @@ transmits to the depot — nothing shuttles, so there is no per-turn busywork �
 but every one of those three is something an opponent can take away. Node
 ownership itself is persistent: stand on one once and it stays yours.
 
-**Five units.** Three form a rock-paper-scissors triangle, one is an honest
-generalist, and one builds things:
+**Six units.** Three form a rock-paper-scissors triangle, one is an honest
+generalist, one builds things, and one is for knocking buildings down:
 
 | Unit | Cost | Build | Speed | HP | Attack | Range | Beats |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -238,11 +239,19 @@ generalist, and one builds things:
 | Trooper | 5 | 2 turns | 2 | 24 | 4 | 1 | — |
 | Gunner | 7 | 2 turns | 2 | 15 | 5 | 2 | Bruiser |
 | Bruiser | 9 | 3 turns | 1 | 48 | 6 | 1 | Scout |
+| Mortar Team | 12 | 3 turns | 1 | 20 | 3 | **4** | — (×4 against structures) |
 
-Countering gives ×1.5 damage out and ×0.5 back. Gunners and Bruisers need a
-**Barracks**, so rushing one is a real opening decision.
+Countering gives ×1.5 damage out and ×0.5 back. Gunners, Bruisers and Mortar
+Teams need a **Barracks**, so rushing one is a real opening decision.
 
-**Five structures**, all raised by an Engineer who has to walk there — there is
+The Mortar sits deliberately outside the triangle: it beats no unit and no unit
+beats it, because what it is for is masonry. What matters about it is the 4 —
+one tile further than a Sentry Tower can shoot back — so it shells a tower to
+rubble from a square that cannot answer, and a line of towers stops being an
+answer on its own to anything. It is slow, it has twenty health, and it does
+three damage to a person, so it is only ever as good as its escort.
+
+**Six structures**, all raised by an Engineer who has to walk there — there is
 no build radius, so forward depots and cheeky proxy towers are both on the
 table. Any Engineer can finish a site somebody else started; one left with
 nobody working it is outlined in red and marked with a `!`:
@@ -253,9 +262,16 @@ nobody working it is outlined in red and marked with a `!`:
 | Supply Depot | 8 | 2 turns | 50 | **+4 army cap**, and receives supply from five tiles away |
 | Barracks | 10 | 3 turns | 60 | Unlocks Gunners and Bruisers |
 | Sentry Tower | 8 | 2 turns | 40 | Shoots three tiles. Never moves |
+| Longbow Tower | 16 | 3 turns | 35 | Shoots **five** tiles. Outranges a Mortar Team |
 | Field Hospital | 10 | 2 turns | 35 | Heals units holding beside it |
 | Airfield | 14 | 3 turns | 45 | Calls one airstrike a turn |
 | Barricade | 2 | 1 turn | 30 | Blocks the way |
+
+Those two towers and the Mortar make a small range ladder — a Sentry reaches
+three, a Mortar four, a Longbow five — and it is the whole of the counter-play
+around static defence. Cheap Sentries stop things that close; Mortars take
+Sentries apart from outside their reach; Longbows kill Mortars. None of the
+three is an answer on its own, which is the point.
 
 **Cost scales with the square of the army, not with the map.** Doubling the
 units on the board costs about 3.6x a turn, because picking a target is the one
@@ -536,8 +552,14 @@ Hand-authored, as plain text — a new map needs a text editor and nothing else:
 ```
 
 `.` open · `#` rock · `~` water · `%` forest (walkable, blocks sight, costs
-double) · `$` resource node · `1`-`4` spawns. Team play pairs spawns 1&3
-against 2&4, so a team map puts those pairs on opposite sides.
+double) · `$` resource node · `1`-`4` spawns · `G` a Holdout gate. Team play
+pairs spawns 1&3 against 2&4, so a team map puts those pairs on opposite sides.
+
+`!mode holdout` makes a map co-operative, and it needs at least one `G`.
+**The mode lives on the map rather than in the lobby**, which means the rules
+and the terrain can never be set to contradict each other: there is no settings
+row that can drop waves onto a map with no gates, or put four commanders at war
+inside one shared town. Picking the map picks the rules.
 
 Three ship with the game: **Cross Duel** (1v1), **Crossroads** (tight
 four-way), and **Dry Basin** (four-way split by a river). Drop a new `.map`
@@ -664,6 +686,95 @@ Mismatched bots settle in 38–96.
 
 ---
 
+## Holdout — co-operative tower defence
+
+Everything above is four commanders trying to knock each other over. Holdout is
+the other thing the suite did not have: **all four of you on the same side**,
+against a schedule.
+
+Pick **The Holdout** in the lobby and the rules change with the map. The four
+starting positions sit inside a walled town with a gap in each wall, waves of
+**the Swarm** walk in at the gates on a fixed timetable, and they march on the
+nearest Command Post and shoot it. There is no lives counter and no leak rule:
+the Command Posts *are* the lives, so the health bar on the board is how close
+you are to losing, and a breakthrough reads as the emergency it is. Lose them
+all and the table loses together.
+
+    Waves 5-30, default 12. Twelve is about forty turns -- a session.
+
+**The schedule is fixed, not random.** A family learns it — "the Gunners come on
+six, the Mortars on eight" — and learning it is most of what makes a tower
+defence fun. Two evenings on the same map are the same problem, which is the
+point: you get better at it. Every wave and its contents are public; the status
+bar counts down to the next one.
+
+Money comes from the waves, not from the map. Every commander is paid a
+**muster** as each wave walks in, and a **bounty** on every creep they kill —
+towers included, because a tower defence where towers do not pay for themselves
+is one where nobody builds towers. The resource nodes are all *outside* the
+wall, so a ground economy is a risk you choose to take rather than an income you
+can count on.
+
+### What we got wrong first
+
+Three things, all of which measured much worse than they sound.
+
+**Paying on a clear.** The first version paid everyone a stipend when the board
+was empty of creeps. It looks fairer and it is unplayable: from about wave six
+the waves overlap, the board is never empty again, and the income simply stops
+at exactly the point a defence most needs to be spending. Pay on arrival — a
+wave you can see coming is a wage you can plan around.
+
+**Making the waves bigger.** The obvious difficulty knob is a steeper curve, and
+across four seeds a curve twice as steep and one four times as steep both came
+out *easier to survive* than the shallow one — held 4 of 4 against 1 of 4. A
+chokepoint kills the twentieth Trooper exactly as cheaply as the fifth, while
+the bounty on it pays for another tower; more bodies through a doorway is more
+income for the defence. So the difficulty is carried by **rank** instead: waves
+harden every three steps, +1 attack and +4 health a rung, and the top rung
+carries an officer's aura that buffs its own escort.
+
+**Assuming the existing roster could threaten a prepared line.** It cannot, and
+that is not a bug in the numbers — the five units were balanced for a symmetric
+war. A walled town with towers in the gaps beat a thirty-wave schedule without
+taking a single point of damage. The Mortar Team is what fixed it, and it is the
+reason it exists in both modes: something that outranges masonry turns a static
+defence from an answer into a thing that itself has to be defended.
+
+### How hard is it?
+
+Bots playing the defence, six seeds each, four commanders:
+
+| Waves | Novice | Moderate | Veteran |
+| --- | --- | --- | --- |
+| 8 | held 6/6 | held 6/6 | held 6/6 |
+| 12 | 0/6 | **3/6** | **3/6** |
+| 20 | 0/6 | 2/6 | 1/6 |
+
+Eight waves is a warm-up you will not lose. Twelve is a coin flip. Twenty is
+meant to beat you. Around 10ms a turn with four armies and a wave on the board,
+so a Pi 400 is fine.
+
+Bots fill empty seats and play the mode properly rather than the war: they hold
+the four doorways, raise towers before anything else, mix Longbows into the line
+once Mortars start arriving, and do not go prospecting for resource nodes across
+ground a wave is walking. They do not negotiate — there is nobody to negotiate
+with, and left switched on, a bot losing a bad wave read the Swarm as a rival
+running away with the war and sued it for peace.
+
+### What it reuses
+
+Nearly everything, which is why it is a mode rather than a third game. The Swarm
+is an ordinary player that nobody sits behind, so every rule that asks "whose
+side is this on" — fog, targeting, pathing, alliance — already worked. Its units
+are the same six. A Barricade in its way is a building in reach, and buildings
+in reach get shot at, so mazing works and walls are consumable without a line of
+code written for it. The champions are ordinary Bruisers carrying the rank the
+promotion system already grants. The new code is a wave schedule, a victory
+condition, and about eighty lines of bot.
+
+---
+
 ## How cross-platform play works
 
 An x86-64 Windows box and a 32-bit ARM Pi never have to agree about floating
@@ -742,7 +853,7 @@ python -m standing_orders server [--port P] [--name N] [--bots N] [--skill S]
 
 ```bash
 ./scripts/setup.sh --dev   # or: python3 -m pip install -e ".[dev]"
-python3 -m pytest          # 324 tests
+python3 -m pytest          # 353 tests
 python3 -m pyflakes lanlib scorched standing_orders tests
 ```
 

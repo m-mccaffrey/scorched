@@ -57,7 +57,7 @@ ARMY_CAP_ROOF = 90
 #: Units that can properly demolish a barricade. Everyone else can chip at it,
 #: at a quarter rate -- enough that a wall is never an absolute full stop, far
 #: too slow to be the answer to one.
-BREACHERS = frozenset({"bruiser", "worker"})
+BREACHERS = frozenset({"bruiser", "worker", "siege"})
 WALL_CHIP_DIVISOR = 4
 
 #: What an Engineer does to a structure. Its attack stat governs only its
@@ -122,6 +122,9 @@ class UnitType:
     beats: str = ""         # unit code this one counters
     built_at: str = "base"
     builder: bool = False   # can raise structures and harvest nodes
+    #: Multiplier on damage done to *structures*. One for everything that
+    #: shoots people for a living; the Mortar's whole reason to exist.
+    siege: int = 1
     blurb: str = ""
 
 
@@ -167,6 +170,14 @@ UNITS: tuple[UnitType, ...] = (
              attack=6, reach=1, vision=3, initiative=4, beats="scout",
              built_at="barracks",
              blurb="A wall that walks. Slowly."),
+    # Deliberately outside the counter triangle: it does not beat a unit and
+    # no unit beats it, because what it is for is masonry. Reach 4 is the
+    # number that matters -- one further than a Sentry Tower can shoot back --
+    # so a line of towers is no longer an answer on its own to anything.
+    UnitType("siege", "Mortar Team", cost=12, build_turns=3, speed=1, hp=20,
+             attack=3, reach=4, vision=4, initiative=5, built_at="barracks",
+             siege=4,
+             blurb="Outranges towers and flattens them. Helpless on its own."),
 )
 
 BUILDINGS: tuple[BuildingType, ...] = (
@@ -175,8 +186,8 @@ BUILDINGS: tuple[BuildingType, ...] = (
                  supply_cap=ARMY_CAP_BASE, harvests=True, buildable=False,
                  blurb="Lose it and you are out. Also receives supply."),
     BuildingType("barracks", "Barracks", cost=10, build_turns=3, hp=60,
-                 vision=4, produces=("ranged", "bruiser"),
-                 blurb="Unlocks Gunners and Bruisers."),
+                 vision=4, produces=("ranged", "bruiser", "siege"),
+                 blurb="Unlocks Gunners, Bruisers and Mortar Teams."),
     BuildingType("depot", "Supply Depot", cost=8, build_turns=2, hp=50,
                  vision=4, supply_cap=DEPOT_CAP, harvests=True,
                  blurb="+3 army cap. Workers within 5 tiles can send supply."),
@@ -190,6 +201,13 @@ BUILDINGS: tuple[BuildingType, ...] = (
     BuildingType("airfield", "Airfield", cost=14, build_turns=3, hp=45,
                  vision=4, airstrikes=True,
                  blurb="Calls one airstrike a turn, anywhere on the map."),
+    # The answer to the Mortar, and the top of a small range ladder: a Sentry
+    # reaches three, a Mortar four, a Longbow five. Expensive and brittle, so
+    # it is a considered purchase rather than the tower you spam -- and it
+    # cannot defend itself against anything that closes.
+    BuildingType("longbow", "Longbow Tower", cost=16, build_turns=3, hp=35,
+                 vision=6, attack=7, reach=5,
+                 blurb="Shoots five tiles. Outranges a Mortar Team."),
     BuildingType("wall", "Barricade", cost=2, build_turns=1, hp=30,
                  vision=0, wall=True,
                  blurb="Blocks the way. Bruisers and Engineers break it fast."),
@@ -227,7 +245,7 @@ def damage_to_building(attacker: str, building_code: str = "",
     Barricades are the exception: Bruisers and Engineers tear them down, and
     everyone else can only chip away.
     """
-    damage = UNIT[attacker].attack + bonus
+    damage = (UNIT[attacker].attack + bonus) * UNIT[attacker].siege
     if UNIT[attacker].builder:
         damage = WORKER_DEMOLISH + bonus
     if building_code and BUILDING[building_code].wall:

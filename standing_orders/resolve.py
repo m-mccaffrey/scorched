@@ -22,6 +22,7 @@ from __future__ import annotations
 from .fog import VisionCache, team_vision
 from .grid import COST_OPEN, NEIGHBOURS, chebyshev, find_path
 from .state import Building, MatchState, Unit
+from .waves import SWARM_PID, bounty_for, muster_pay
 from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, BUILDING,
                     MEDIC_HEAL_COST, OFFICER_AURA, OFFICER_AURA_RADIUS,
                     OFFICER_RANK, RANK_ATTACK, RANK_HP, RESEARCH_BY_CODE, UNIT,
@@ -585,6 +586,7 @@ class Resolver:
         self._foes = {pid: frozenset(other for other in self.state.players
                                      if self.state.hostile(pid, other))
                       for pid in self.state.players}
+        self._swarm_turn()
         self._admit_patients()
         self._snapshot_vision(0)
         for beat in range(1, SUBTICKS + 1):
@@ -596,6 +598,116 @@ class Resolver:
             self._snapshot_vision(beat, reuse=not moved)
         self._end_of_turn()
         return self.result, rejected
+
+    # -- Holdout -----------------------------------------------------------
+    def _swarm_turn(self) -> None:
+        """Everything the Swarm does: arrive, and keep walking at somebody."""
+        if self.state.mode != "holdout" or SWARM_PID not in self.state.players:
+            return
+        self._reinforce_swarm()
+        self._steer_swarm()
+
+    def _steer_swarm(self) -> None:
+        """Re-task anyone who has stopped having somewhere to be.
+
+        Two ways that happens and both need answering every turn. A creep whose
+        Command Post has been destroyed has won its private war and would stand
+        there for the rest of the match; and a creep that has been walled off
+        has its goal *cleared* by the marcher, because "no route" is how a unit
+        gives up. Handed the goal back, it walks as far as the partial route
+        gets it -- which is up against the wall, where a barricade is a building
+        in reach and gets shot like anything else.
+        """
+        live = {b.tile for b in self.state.buildings.values()
+                if b.alive and b.code == "base" and b.owner != SWARM_PID}
+        for unit in sorted(self.state.units.values(), key=lambda u: u.uid):
+            if not unit.alive or unit.owner != SWARM_PID:
+                continue
+            if unit.goal in live and unit.stance == "attack":
+                continue
+            target = self._swarm_target(unit.tile)
+            if target is None:
+                continue
+            unit.stance = "attack"
+            unit.goal = target
+            unit.path = []
+
+    def _reinforce_swarm(self) -> None:
+        """Walk this turn's wave in at the gates, already marching.
+
+        Creeps are given an attack-move and nothing else, ever again. Orders in
+        this game stand until they are changed, so one order at the gate is a
+        standing instruction to walk to the Command Post and shoot whatever
+        gets in the way -- which is the whole of the Swarm's tactics and not a
+        line of pathfinding or targeting written for it.
+        """
+        state = self.state
+        while (state.wave_at < len(state.waves)
+               and state.waves[state.wave_at]["at"] <= state.turn):
+            wave = state.waves[state.wave_at]
+            state.wave_at += 1
+            # Pay the garrison as the wave musters, not when it is cleared:
+            # past about wave six the waves overlap and the board is never
+            # empty again, so a clear-based wage simply stops arriving.
+            purse = muster_pay(wave)
+            for player in state.players.values():
+                if player.alive and player.pid != SWARM_PID:
+                    player.supply += purse
+            self.result.add(0, "wave", n=wave["n"], of=len(state.waves),
+                            pay=purse)
+            gates = state.map.gates or [next(iter(state.map.spawns.values()))]
+            index = 0
+            for code, rank, count in wave["pack"]:
+                for _ in range(count):
+                    gate = gates[index % len(gates)]
+                    index += 1
+                    self._land_creep(code, int(rank), gate)
+
+    def _land_creep(self, code: str, rank: int, gate) -> None:
+        tile = self._free_tile_near(gate) if gate in self.occupancy else gate
+        if tile is None or not self.state.map.passable(*tile):
+            return                      # the gate is jammed; it waits its turn
+        unit = self.state.add_unit(SWARM_PID, code, tile[0], tile[1])
+        if rank:
+            unit.rank = rank
+            unit.max_hp += RANK_HP * rank
+            unit.hp = unit.max_hp
+        self.occupancy[tile] = ("unit", unit.uid)
+        self.result.add(0, "spawn", uid=unit.uid, owner=unit.owner, code=code,
+                        at=list(tile), hp=unit.hp)
+        target = self._swarm_target(tile)
+        if target is not None:
+            unit.stance = "attack"
+            unit.goal = target
+
+    def _swarm_target(self, origin):
+        """The nearest standing Command Post. What the whole wave is for."""
+        posts = [b for b in self.state.buildings.values()
+                 if b.alive and b.code == "base" and b.owner != SWARM_PID]
+        if not posts:
+            return None
+        return min(posts, key=lambda b: (chebyshev(origin, b.tile), b.bid)).tile
+
+    def _bounty(self, shooter_id: int, victim: Unit) -> None:
+        """Pay whoever killed a creep. Towers count, which is the point.
+
+        Paid to the killer rather than split across the team so that the guns
+        doing the work earn their own replacement, and paid for tower kills
+        because a tower defence where towers do not pay for themselves is a
+        tower defence where nobody builds towers.
+        """
+        if self.state.mode != "holdout" or victim.owner != SWARM_PID:
+            return
+        if shooter_id > 0:
+            killer = self.state.units.get(shooter_id)
+        else:
+            killer = self.state.buildings.get(-shooter_id)
+        if killer is None or killer.owner == SWARM_PID:
+            return
+        player = self.state.players.get(killer.owner)
+        if player is None:
+            return
+        player.supply += bounty_for(victim.code)
 
     # -- medical -----------------------------------------------------------
     def _admit_patients(self) -> None:
@@ -845,6 +957,7 @@ class Resolver:
                         hp=max(0, target.hp), to=list(target.tile))
         if target.hp <= 0:
             if is_unit:
+                self._bounty(shooter_id, target)
                 self._kill_unit(beat, target)
             else:
                 self._kill_building(beat, target)

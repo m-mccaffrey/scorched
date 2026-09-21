@@ -17,8 +17,8 @@ import random
 from dataclasses import dataclass
 
 from .fog import VisionCache, team_vision
-from .grid import NEIGHBOURS, chebyshev, manhattan
-from .resolve import PACT_BINDING
+from .grid import MODE_HOLDOUT, NEIGHBOURS, chebyshev, find_path, manhattan
+from .resolve import PACT_BINDING, PLAN_BUDGET
 from .units import (AIRSTRIKE_COST, AIRSTRIKE_RADIUS, ARMY_CAP_BASE, BUILDING,
                     DEPOT_CAP, HARVEST_RADIUS, UNIT, available_research,
                     cost_of_building, max_rank, promotion_cost)
@@ -103,6 +103,19 @@ BUILDERS_MAX = 4
 #: base with towers at the gates using nothing but infantry.
 TOWERS_AT_HOME = 3
 TOWER_BUFFER = 16
+
+#: Towers a bot raises in a Holdout, where masonry is the whole plan rather
+#: than a luxury bought once the army is paid for.
+TOWERS_IN_HOLDOUT = 10
+
+#: How far from its Command Post a Holdout bot will go to found a forward
+#: depot. Short, because the ground beyond the wall is where the waves are.
+HOLDOUT_REACH = 8
+
+#: One tower in this many is a Longbow. A line of nothing but Sentries is
+#: free food for a Mortar Team, which outranges them; a line of nothing but
+#: Longbows costs twice as much and still cannot stop anything that closes.
+LONGBOW_IN = 3
 
 #: Only start a research project with this much supply to spare, so teching
 #: never comes at the price of an army.
@@ -298,6 +311,11 @@ class BotBrain:
         """
         state = match.state
         orders: list = []
+        # Nobody negotiates with the Swarm, and the commanders are already on
+        # the same side. Left switched on, a bot losing a bad wave read the
+        # Swarm as a rival running away with the war and sued it for peace.
+        if state.mode == MODE_HOLDOUT:
+            return orders
         mine = self._might_of(state, me.pid)
         others = [p for p in state.players.values()
                   if p.alive and p.pid != me.pid]
@@ -580,6 +598,7 @@ class BotBrain:
 
         #: Sites promised this turn, so two rules cannot claim one square.
         spoken_for: set = set()
+        holdout = state.mode == MODE_HOLDOUT
 
         def commit(worker, code: str, site) -> None:
             if worker in idle_workers:
@@ -588,6 +607,62 @@ class BotBrain:
             spoken_for.add(tuple(site))
             orders.append({"o": "build", "uid": worker.uid, "code": code,
                            "to": list(site)})
+
+        # Sentry Towers. Eight supply for something that shoots three tiles
+        # and never runs is the best trade on the board, and bots were not
+        # making it at all: they walked infantry into walled bases with towers
+        # at the gates and wondered where the army went.
+        #
+        # In a Holdout this runs *first*, ahead of every other kind of
+        # spending, because masonry is the plan rather than a luxury bought
+        # once the army is paid for. The first attempt instead held a reserve
+        # back from the recruiting queue, which was much worse than it sounds:
+        # a Holdout bot's whole treasury is about fifteen supply, so a
+        # twelve-supply reserve stopped it training anything at all while the
+        # Depot and Barracks rules went on spending the rest -- fifteen units
+        # and two towers by wave ten, and a loss on every seed. Priority is a
+        # better tool than a reserve.
+        towers = [b for b in my_buildings if b.code == "tower"]
+        tower_target = TOWERS_IN_HOLDOUT if holdout else TOWERS_AT_HOME
+        tower_buffer = TOWER_BUFFER // 4 if holdout else TOWER_BUFFER
+
+        def raise_towers(spend: int) -> int:
+            # No Barracks precondition in a Holdout: a gun at the door is the
+            # first thing worth owning, not a reward for having an economy.
+            #
+            # A line of Sentry Towers is not a defence on its own: a Mortar
+            # Team reaches one tile further than a Sentry and shells it to
+            # rubble from a square it cannot be shot back from. So a share of
+            # the line is Longbows, which reach one further again. Measured
+            # before this: the wave-eight Mortars took the towers apart, the
+            # army followed them in, and the line broke on every seed.
+            longbows = sum(1 for b in towers
+                           if b is not None and b.code == "longbow")
+            while ((SKILLS[self.skill].defends or holdout)
+                   and (barracks or holdout) and len(towers) < tower_target
+                   and spend >= tower_buffer):
+                # One in LONGBOW_IN, and never the first one: a Sentry at a
+                # door on turn three is worth more than a Longbow on turn six.
+                code = ("longbow" if towers and longbows * LONGBOW_IN < len(towers)
+                        else "tower")
+                price = cost_of_building(code, me.research)
+                if spend < price + tower_buffer:
+                    code = "tower"
+                    price = cost_of_building(code, me.research)
+                    if spend < price + tower_buffer:
+                        break
+                worker = hands_for(price, tower_buffer)
+                site = self._tower_site(state, bases[0].tile, spoken_for)
+                if worker is None or site is None:
+                    break
+                commit(worker, code, site)
+                spend -= price
+                towers.append(None)
+                longbows += 1 if code == "longbow" else 0
+            return spend
+
+        if holdout:
+            budget = raise_towers(budget)
 
         # 1. Barracks: the gate to the counter triangle. Gated on already
         #    having a Depot, so nobody opens with one and spends the match on
@@ -671,25 +746,8 @@ class BotBrain:
             budget -= price
             barracks = barracks + [None]
 
-        # 3a. Sentry Towers at home. Eight supply for something that shoots
-        #     three tiles and never runs is the best trade on the board, and
-        #     bots were not making it: they walked infantry into a walled base
-        #     with towers at the gates and wondered where the army went. Only
-        #     for bots that defend at all, and only once there is something
-        #     behind the wall worth shooting over.
-        towers = [b for b in my_buildings if b.code == "tower"]
-        price = cost_of_building("tower", me.research)
-        while (SKILLS[self.skill].defends and barracks
-               and len(towers) < TOWERS_AT_HOME
-               and budget >= price + TOWER_BUFFER):
-            worker = hands_for(price, TOWER_BUFFER)
-            site = self._site_near(state, bases[0].tile, radius=3,
-                                   avoid=spoken_for)
-            if worker is None or site is None:
-                break
-            commit(worker, "tower", site)
-            budget -= price
-            towers = towers + [None]
+        if not holdout:
+            budget = raise_towers(budget)
 
         # 3b. Support buildings, once there is an army worth supporting. A
         #     Field Hospital first -- it pays back every turn there is a
@@ -782,19 +840,43 @@ class BotBrain:
         return orders
 
     def _node_needing_depot(self, state, me, worker, receivers):
-        """A node worth putting a depot beside: ours, or free, and out of range."""
+        """A node worth putting a depot beside: ours, or free, and out of range.
+
+        Skips nodes an Engineer is already walking to. Without that check the
+        rule re-picked the same node every turn -- an unbuilt depot is still an
+        unserved node -- and handed it to whichever Engineer happened to be
+        free. Measured in a Holdout: all four Engineers carrying the identical
+        job for the identical tile, none of them ever arriving, and no other
+        structure raised for the rest of the match.
+        """
+        claimed = self._claimed_sites(state, me)
+        far = HOLDOUT_REACH if state.mode == MODE_HOLDOUT else 0
+        home = next((b.tile for b in state.buildings_of(me.pid)
+                     if b.code == "base" and b.alive), None)
         best = None
         for node in state.map.nodes:
             owner = state.node_owner.get(node)
             if owner is not None and not state.allied(owner, me.pid):
                 continue
+            if any(chebyshev(node, spot) <= 1 for spot in claimed):
+                continue
             if any(r is not None and chebyshev(node, r.tile) <= HARVEST_RADIUS
                    for r in receivers):
+                continue
+            # A Holdout bot does not go prospecting. The waves are walking the
+            # open ground, and an Engineer sent across it to found a forward
+            # depot is a donation. What it earns instead is bounties.
+            if far and home is not None and manhattan(node, home) > far:
                 continue
             distance = manhattan(node, worker.tile)
             if best is None or distance < best[0]:
                 best = (distance, node)
         return best[1] if best else None
+
+    def _claimed_sites(self, state, me) -> set:
+        """Tiles this commander's Engineers already have outstanding jobs on."""
+        return {unit.job[1] for unit in state.units.values()
+                if unit.alive and unit.owner == me.pid and unit.job is not None}
 
     def _site_near(self, state, origin, radius: int = 3, avoid=()):
         """A free, buildable tile close to somewhere that does not seal it in.
@@ -818,7 +900,13 @@ class BotBrain:
         had bricked itself in. Two rules follow: leave the Command Post a moat,
         and never take the tile that closes the pocket.
         """
-        occupied = set(state.occupancy()) | set(avoid)
+        # A tile somebody is already walking to with a shovel is spoken for,
+        # whoever they are. It does not block the build order -- the site is
+        # empty until the structure goes up -- but two Engineers converging on
+        # one square is two walks for one building.
+        occupied = (set(state.occupancy()) | set(avoid)
+                    | {u.job[1] for u in state.units.values()
+                       if u.alive and u.job is not None})
         # Only structures and terrain count as walls for the escape test.
         # Occupancy includes *units*, and units move: counting them meant a
         # yard with somebody standing in each gap read as permanently sealed,
@@ -911,8 +999,16 @@ class BotBrain:
 
         pool = ["trooper", "scout"]
         if have_barracks:
+            # A Mortar Team is the answer to masonry and nothing else, so it
+            # is worth owning where there is masonry to answer -- and worth
+            # nothing at all in a Holdout, where the enemy builds no
+            # structures and a Mortar is a 12-supply unit that does three
+            # damage to a person.
             pool = ["trooper", "ranged", "bruiser", "scout"]
             weights = [4, 3, 2, 1]
+            if state.mode != MODE_HOLDOUT:
+                pool.append("siege")
+                weights.append(2)
         else:
             weights = [4, 2]
         return self.rng.choices(pool, weights=weights, k=1)[0]
@@ -927,6 +1023,9 @@ class BotBrain:
 
         bases = [b for b in my_buildings if b.code == "base"]
         home = bases[0].tile if bases else None
+        if state.mode == MODE_HOLDOUT:
+            return self._hold_the_line(match, me, my_units, my_buildings,
+                                       enemies, home)
         fighters = [u for u in my_units if u.code not in ("scout", "worker")]
         scouts = [u for u in my_units if u.code == "scout"]
 
@@ -1037,6 +1136,106 @@ class BotBrain:
             if spot is not None:
                 orders.append({"o": "move", "uid": scout.uid, "to": list(spot)})
         return orders
+
+    def _tower_site(self, state, home, spoken_for):
+        """Where a gun goes: beside a doorway in Holdout, at home otherwise.
+
+        Towers built in the middle of a town shoot nothing. The doorways are
+        known from the map, so a Holdout bot walls the gaps rather than
+        decorating its own yard.
+        """
+        if state.mode != MODE_HOLDOUT:
+            return self._site_near(state, home, radius=3, avoid=spoken_for)
+        for post in self._doorways(state, home):
+            site = self._site_near(state, post, radius=2, avoid=spoken_for)
+            if site is not None:
+                return site
+        return self._site_near(state, home, radius=4, avoid=spoken_for)
+
+    def _hold_the_line(self, match, me, my_units, my_buildings, enemies,
+                       home) -> list:
+        """Holdout: there is no enemy base, so there is nothing to march on.
+
+        Left to the war planner a bot in Holdout is lost -- it looks for the
+        weakest enemy Command Post, the Swarm has never had one, and the
+        fallback picks an enemy *spawn point*, which on a co-operative map is a
+        teammate's front door. Measured: four bots milling about in the middle
+        of their own town for eighty turns while the waves walked past them.
+
+        Defence here is a picket, not a deathball. Each fighter is assigned the
+        doorway nearest it and told to advance on whatever is coming through --
+        which spreads the army over all four gates instead of concentrating it
+        at one and leaving the other three open.
+        """
+        state = match.state
+        orders: list = []
+        fighters = [u for u in my_units if not u.builder]
+        if not fighters:
+            return orders
+
+        orders += self._to_hospital(state, my_buildings, fighters)
+
+        doors = self._doorways(state, home)
+        for unit in fighters:
+            post = min(doors, key=lambda t: manhattan(unit.tile, t)) \
+                if doors else home
+            # Anything already through the door outranks the door itself.
+            near = [e for e in enemies
+                    if manhattan(e.tile, post) <= DEFEND_RADIUS
+                    or manhattan(e.tile, unit.tile) <= DEFEND_RADIUS]
+            if near:
+                target = min(near, key=lambda e: (manhattan(e.tile, unit.tile),
+                                                  e.uid)).tile
+            elif post is not None:
+                target = post
+            else:
+                continue
+            if unit.tile == target:
+                orders.append({"o": "hold", "uid": unit.uid})
+            else:
+                orders.append({"o": "attack", "uid": unit.uid,
+                               "to": list(target)})
+        return orders
+
+    def _to_hospital(self, state, my_buildings, fighters) -> list:
+        """Walk the badly hurt to a Field Hospital, and off the roster."""
+        orders: list = []
+        wards = [b for b in my_buildings
+                 if BUILDING[b.code].heal and b.operational]
+        if not wards or SKILLS[self.skill].supports < 1:
+            return orders
+        for unit in list(fighters):
+            if unit.hp >= unit.max_hp * WOUNDED_SHARE:
+                continue
+            ward = min(wards, key=lambda b: manhattan(unit.tile, b.tile))
+            bed = self._bedside(state, ward, unit)
+            if bed is None:
+                continue
+            fighters.remove(unit)
+            if unit.tile == bed:
+                orders.append({"o": "hold", "uid": unit.uid})
+            else:
+                orders.append({"o": "move", "uid": unit.uid, "to": list(bed)})
+        return orders
+
+    def _doorways(self, state, home):
+        """Where to stand: one tile inside the wall on the way to each gate.
+
+        Worked out from the map rather than declared on it. The step from home
+        toward a gate that is still walkable is the doorway the wave will use,
+        and standing on it means meeting the wave in the gap rather than in the
+        open field behind it.
+        """
+        if home is None or not state.map.gates:
+            return []
+        posts = []
+        for gate in state.map.gates:
+            route = find_path(state.map, home, gate, set(), limit=PLAN_BUDGET,
+                              partial=True)
+            if route:
+                # A third of the way out: past the wall, short of the gate.
+                posts.append(route[max(0, len(route) // 3)])
+        return posts or [home]
 
     def _bedside(self, state, ward, unit):
         """A free tile inside a hospital's radius, or the one already held."""

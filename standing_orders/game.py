@@ -11,11 +11,12 @@ import time
 from dataclasses import dataclass
 
 from .fog import VisionCache, filter_events, team_vision, visible_state
-from .grid import TileMap
+from .grid import MODE_HOLDOUT, MODE_WAR, MODES, TileMap
 from .resolve import SUBTICKS, resolve_turn
-from .state import MAX_PLAYERS, MatchState, Player
+from .state import MAX_PLAYERS, SWARM_PID, MatchState, Player
 from .units import ARMY_CAP_DEFAULT, ARMY_CAP_FLOOR, ARMY_CAP_ROOF
 from .units import BUILDING, UNIT
+from .waves import SWARM_COLOR, SWARM_NAME, schedule
 
 PHASE_LOBBY = "lobby"
 PHASE_ORDERS = "orders"
@@ -23,6 +24,15 @@ PHASE_RESOLVE = "resolve"
 PHASE_OVER = "over"
 
 MAPS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps")
+
+#: How many waves a Holdout asks you to survive, and the bounds on the slider.
+#:
+#: Twelve is about forty turns, which is a session. Waves are quadratic, so the
+#: last few of a long schedule are where the difficulty actually lives --
+#: thirty is a genuinely punishing evening and five is a warm-up for children.
+WAVES_DEFAULT = 12
+WAVES_FLOOR = 5
+WAVES_ROOF = 30
 
 #: What each player starts a match holding, beyond their Command Post.
 #: Two Engineers, because the economy cannot start without them.
@@ -45,19 +55,24 @@ class Settings:
     #: costs -- and above about 60 it stops mattering anyway, because nobody
     #: can build enough Supply Depots to use the room.
     army_cap: int = ARMY_CAP_DEFAULT
+    #: Holdout only: how many waves you are asked to survive. Ignored entirely
+    #: on a war map, where there is no Swarm to schedule.
+    waves: int = WAVES_DEFAULT
 
     def clamp(self) -> "Settings":
         self.start_supply = max(0, min(200, int(self.start_supply)))
         self.order_time = max(0, min(600, int(self.order_time)))
         self.army_cap = max(ARMY_CAP_FLOOR, min(ARMY_CAP_ROOF,
                                                 int(self.army_cap)))
+        self.waves = max(WAVES_FLOOR, min(WAVES_ROOF, int(self.waves)))
         self.teams = bool(self.teams)
         return self
 
     def to_wire(self) -> dict:
         return {"map_name": self.map_name, "teams": self.teams,
                 "start_supply": self.start_supply,
-                "order_time": self.order_time, "army_cap": self.army_cap}
+                "order_time": self.order_time, "army_cap": self.army_cap,
+                "waves": self.waves}
 
     @classmethod
     def from_wire(cls, data: dict) -> "Settings":
@@ -74,6 +89,34 @@ def available_maps() -> list[str]:
     except OSError:
         return ["duel"]
     return sorted(names) or ["duel"]
+
+
+def map_modes() -> dict:
+    """Every map's mode, read from its header without parsing the grid.
+
+    The lobby needs to know that picking The Holdout picks co-operative rules,
+    and it needs to know before the match starts. Parsing every map to find out
+    would mean building the passability table for a 98,000-tile continent every
+    time somebody clicks an arrow, so this reads the ``!`` headers and stops.
+    """
+    modes = {}
+    for name in available_maps():
+        mode = MODE_WAR
+        try:
+            with open(os.path.join(MAPS_DIR, f"{name}.map"), "r",
+                      encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.startswith("!"):
+                        if line.strip() and not line.startswith(";"):
+                            break        # into the grid; no header left
+                        continue
+                    key, _, value = line[1:].partition(" ")
+                    if key.strip().lower() == "mode":
+                        mode = value.strip().lower()
+        except OSError:
+            pass
+        modes[name] = mode if mode in MODES else MODE_WAR
+    return modes
 
 
 def load_map(name: str) -> TileMap:
@@ -135,9 +178,20 @@ class Match:
             self._reassign_teams()
 
     def _reassign_teams(self) -> None:
-        """Free-for-all gives everyone their own team; 2v2 splits the roster."""
-        players = sorted(self.state.players.values(), key=lambda p: p.pid)
-        if self.settings.teams and len(players) == 4:
+        """Free-for-all gives everyone their own team; 2v2 splits the roster.
+
+        Holdout puts every commander on one side, because the enemy is the
+        schedule. The Swarm keeps the team it was raised on and is never
+        reassigned -- it is not part of the roster in any sense the lobby
+        means.
+        """
+        players = [p for p in sorted(self.state.players.values(),
+                                     key=lambda p: p.pid)
+                   if p.pid != SWARM_PID]
+        if self.holdout:
+            for player in players:
+                player.team = 0
+        elif self.settings.teams and len(players) == 4:
             for index, player in enumerate(players):
                 player.team = index % 2
         else:
@@ -157,6 +211,7 @@ class Match:
         self.state.army_ceiling = self.settings.army_cap
         for player in roster:
             self.state.players[player.pid] = player
+        self._raise_swarm(len(roster))
         self._reassign_teams()
         self._seed_pacts()
         self._place_starts()
@@ -169,6 +224,28 @@ class Match:
         self.pending = {}
         self._arm_clock()
         self.note(self.state.map.info.name)
+
+    def _raise_swarm(self, commanders: int) -> None:
+        """Holdout: put the enemy on the board and write out its schedule.
+
+        The Swarm is an ordinary Player, which is the whole trick -- every
+        rule that asks "whose side is this on", every fog calculation, every
+        targeting decision, already works in terms of players and needs nothing
+        adding. It is simply one nobody sits behind: disconnected, so it never
+        holds up a turn waiting to be ready, and on its own team, so the pact
+        seeding below leaves it at war with everybody.
+        """
+        if self.state.mode != MODE_HOLDOUT:
+            return
+        self.state.players[SWARM_PID] = Player(
+            pid=SWARM_PID, name=SWARM_NAME, team=SWARM_PID,
+            color=SWARM_COLOR, bot=True, connected=False, ready=True)
+        self.state.waves = schedule(self.settings.waves, commanders)
+        self.state.wave_at = 0
+
+    @property
+    def holdout(self) -> bool:
+        return self.state.mode == MODE_HOLDOUT
 
     def _seed_pacts(self) -> None:
         """Turn the starting teams into standing alliances.
@@ -187,7 +264,9 @@ class Match:
                         "alliance"
 
     def _place_starts(self) -> None:
-        players = sorted(self.state.players.values(), key=lambda p: p.pid)
+        players = [p for p in sorted(self.state.players.values(),
+                                     key=lambda p: p.pid)
+                   if p.pid != SWARM_PID]
         spawns = self.state.map.spawns
         for index, player in enumerate(players, start=1):
             spot = spawns.get(index)
@@ -329,6 +408,34 @@ class Match:
         self.deadline = 0.0
         return self.last_timelines
 
+    def _check_holdout(self) -> bool:
+        """Holdout ends one of two ways and neither involves another player.
+
+        The Command Posts are the lives. There is no separate counter and no
+        leak rule: creeps walk at the nearest Command Post and shoot it, so the
+        health bar on the board *is* how close you are to losing, and a
+        breakthrough reads as the emergency it is. Lose them all and the table
+        loses together.
+        """
+        state = self.state
+        standing = [p for p in state.players.values()
+                    if p.alive and p.pid != SWARM_PID]
+        if not standing:
+            self.phase = PHASE_OVER
+            self.winner_team = SWARM_PID
+            self.note("The Swarm has taken every Command Post.")
+            return True
+
+        left = len(state.waves) - state.wave_at
+        alive = any(u.alive and u.owner == SWARM_PID
+                    for u in state.units.values())
+        if left <= 0 and not alive:
+            self.phase = PHASE_OVER
+            self.winner_team = 0
+            self.note(f"The line held. {len(state.waves)} waves turned back.")
+            return True
+        return False
+
     def begin_orders(self) -> bool:
         """Open the next order phase, or end the match. True if play goes on."""
         if self.check_over():
@@ -347,6 +454,9 @@ class Match:
         because everyone still standing has agreed to stop, and whatever the
         map looks like at that moment is the result.
         """
+        if self.holdout:
+            return self._check_holdout()
+
         living = [p for p in self.state.players.values() if p.alive]
         if self.state.armistice_agreed():
             self.phase = PHASE_OVER
@@ -396,6 +506,7 @@ class Match:
             "players": [p.to_wire() for p in self.state.players.values()],
             "settings": self.settings.to_wire(),
             "maps": available_maps(),
+            "modes": map_modes(),
             "phase": self.phase,
         }
 

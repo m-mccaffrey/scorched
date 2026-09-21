@@ -24,6 +24,10 @@ FOREST = "%"
 NODE = "$"
 SPAWNS = "12345678"
 
+#: Where a Holdout wave walks in from. Ordinary open ground to everything that
+#: moves -- it is a label on the map, not a feature of it.
+GATE = "G"
+
 #: Movement points charged for entering a tile.
 #:
 #: The scale is deliberately coarse -- eight points per beat at full pace --
@@ -53,7 +57,7 @@ COST_FOREST = 192
 MAX_W = 512
 MAX_H = 320
 
-_PASSABLE = set(OPEN + FOREST + NODE + SPAWNS)
+_PASSABLE = set(OPEN + FOREST + NODE + SPAWNS + GATE)
 _BLOCKS_SIGHT = {ROCK, FOREST}
 
 #: Four-way neighbourhood, in a fixed order so pathfinding is deterministic.
@@ -68,6 +72,7 @@ TERRAIN_INFO = {
     WATER: ("Water", "Impassable. You can see across it."),
     FOREST: ("Forest", "Blocks sight. Costs double to cross."),
     NODE: ("Resource node", "Stand on it once to claim it."),
+    GATE: ("Gate", "The waves come in here."),
 }
 
 
@@ -106,6 +111,25 @@ def _pace(raw, name: str) -> int:
 DEFAULT_PACE = 1
 MAX_PACE = 4
 
+#: What kind of match a map is for. A Holdout map has gates and its starting
+#: positions clustered together; a war map has neither and would be nonsense
+#: with waves walking into it. Declaring it on the map rather than in the lobby
+#: means the two can never be combined wrongly -- picking the map picks the
+#: rules, and there is no settings row that can contradict the terrain.
+MODE_WAR = "war"
+MODE_HOLDOUT = "holdout"
+MODES = (MODE_WAR, MODE_HOLDOUT)
+
+
+def _mode(raw, name: str) -> str:
+    if raw is None or not str(raw).strip():
+        return MODE_WAR
+    value = str(raw).strip().lower()
+    if value not in MODES:
+        raise MapError(f"{name}: unknown mode '{raw}', expected one of "
+                       f"{', '.join(MODES)}")
+    return value
+
 
 @dataclass(frozen=True)
 class MapInfo:
@@ -115,16 +139,18 @@ class MapInfo:
     teams: bool
     notes: str
     pace: int = DEFAULT_PACE
+    mode: str = MODE_WAR
 
 
 class TileMap:
     """A rectangular grid of terrain, plus spawn points and resource nodes."""
 
     __slots__ = ("width", "height", "tiles", "spawns", "nodes", "node_set",
-                 "info", "step_cost")
+                 "gates", "info", "step_cost")
 
     def __init__(self, tiles: list[str], spawns: dict[int, tuple[int, int]],
-                 nodes: list[tuple[int, int]], info: MapInfo) -> None:
+                 nodes: list[tuple[int, int]], info: MapInfo,
+                 gates: list[tuple[int, int]] | None = None) -> None:
         self.tiles = tiles
         self.height = len(tiles)
         self.width = len(tiles[0]) if tiles else 0
@@ -133,6 +159,9 @@ class TileMap:
         #: The same tiles as a set. One source of truth for "is this a node",
         #: so capture and harvesting can never disagree about it.
         self.node_set = set(nodes)
+        #: Where Holdout waves enter, in reading order so the schedule is
+        #: deterministic. Empty on a war map.
+        self.gates = list(gates or ())
         self.info = info
         #: Passable tiles mapped to what they cost to enter, flattened once at
         #: load. A* asked ``passable()`` and ``cost()`` for every neighbour it
@@ -205,9 +234,12 @@ class TileMap:
 
         spawns: dict[int, tuple[int, int]] = {}
         nodes: list[tuple[int, int]] = []
+        gates: list[tuple[int, int]] = []
         for y, row in enumerate(rows):
             for x, char in enumerate(row):
-                if char in SPAWNS:
+                if char == GATE:
+                    gates.append((x, y))
+                elif char in SPAWNS:
                     slot = int(char)
                     if slot in spawns:
                         raise MapError(f"{name}: duplicate spawn '{char}'")
@@ -230,8 +262,12 @@ class TileMap:
             teams=meta.get("teams", "").lower() in ("1", "true", "yes"),
             notes=meta.get("notes", ""),
             pace=_pace(meta.get("pace"), name),
+            mode=_mode(meta.get("mode"), name),
         )
-        return cls(rows, spawns, nodes, info)
+        if info.mode == MODE_HOLDOUT and not gates:
+            raise MapError(f"{name}: a holdout map needs at least one "
+                           f"'{GATE}' gate for the waves to come in at")
+        return cls(rows, spawns, nodes, info, gates)
 
     @classmethod
     def load(cls, path: str) -> "TileMap":
@@ -242,7 +278,7 @@ class TileMap:
         return {"tiles": self.tiles, "name": self.info.name,
                 "players": self.info.players, "teams": self.info.teams,
                 "notes": self.info.notes, "author": self.info.author,
-                "pace": self.info.pace}
+                "pace": self.info.pace, "mode": self.info.mode}
 
     @classmethod
     def from_wire(cls, data: dict) -> "TileMap":
@@ -261,6 +297,7 @@ class TileMap:
             teams=bool(data.get("teams", tilemap.info.teams)),
             notes=data.get("notes", tilemap.info.notes),
             pace=_pace(data.get("pace"), data.get("name", "map")),
+            mode=_mode(data.get("mode"), data.get("name", "map")),
         )
         return tilemap
 

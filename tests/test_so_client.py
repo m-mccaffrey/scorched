@@ -489,3 +489,80 @@ def test_the_pointer_at_the_edge_of_the_board_does_not_pan(app):
         app.mouse = spot
         app._scroll_camera(0.5)
     assert (board.cam_x, board.cam_y) == (0, 0), "the pointer moved the camera"
+
+
+def host_on_a_free_port(app, settings, **kwargs):
+    """What App.host_game does, but on an ephemeral port.
+
+    host_game binds the one fixed port the LAN discovers games on, and every
+    suite in this process wants it. Rather than queue for it, this drives the
+    same Server the app would have started and hands the app the connection --
+    the client code path under test is identical either way.
+    """
+    import threading
+
+    from standing_orders.server import Server
+
+    app.disconnect()
+    server = Server(port=0, name="holdout test", settings=settings,
+                    announce=False, **kwargs)
+    server.start()
+    threading.Thread(target=server.run, name="so-holdout", daemon=True).start()
+    app.server = server
+    app.join_game("127.0.0.1", server.bound_port)
+
+
+def test_a_holdout_plays_through_the_real_client(app):
+    """The co-operative mode end to end: the Swarm arrives, the client draws
+    it, and the wave counter in the status bar tracks the schedule."""
+    host_on_a_free_port(app, Settings(map_name="holdout", order_time=3,
+                                      waves=6), bots=1, bot_skill="moderate")
+    assert drive(app, 6, lambda: len(app.players) >= 2)
+    app.send({"t": "start"})
+    assert drive(app, 8, lambda: app.renderer.board is not None and app.view.units)
+    assert app.view.mode == "holdout"
+    assert app.view.waves == 6
+    assert app.view.next_wave
+
+    from standing_orders.state import SWARM_PID
+    turns = {"n": 0}
+
+    def seen():
+        return any(u["owner"] == SWARM_PID for u in app.view.units.values())
+
+    def play():
+        if app.phase == "orders" and app.replay is None and not app.ready_sent:
+            app._send_ready()
+            turns["n"] += 1
+        return seen()
+
+    # Not "a wave has spawned" -- the gates are out at the edge of the map and
+    # the town cannot see them, so the Swarm arrives in the dark and has to be
+    # met. Waiting for one to walk into somebody's vision is the real property:
+    # the wave is on the board *and* the fog filter is letting it through.
+    assert drive(app, 120, play), (f"no creep came into view in {turns['n']} "
+                                   f"turns (wave {app.view.wave}, "
+                                   f"turn {app.turn})")
+    assert app.view.wave >= 1
+    # The Swarm is a player like any other as far as drawing is concerned.
+    for mode in ("game", "pause"):
+        app.mode = mode
+        app._draw()
+    app.mode = "game"
+
+
+def test_the_lobby_offers_waves_on_a_holdout_map_and_teams_otherwise(app):
+    """Teams mean nothing when everyone is on the same side, and a wave count
+    means nothing when there are no waves. The map decides which row you get,
+    which is also how the mode can never be set to contradict the terrain."""
+    app.mode = "hostsetup"
+    app.settings.map_name = "holdout"
+    app._draw()
+    holdout_rows = [b.action for b in app._buttons]
+    app.settings.map_name = "basin"
+    app._draw()
+    war_rows = [b.action for b in app._buttons]
+
+    assert "waves:+" in holdout_rows and "teams:+" not in holdout_rows
+    assert "teams:+" in war_rows and "waves:+" not in war_rows
+    app.mode = "menu"

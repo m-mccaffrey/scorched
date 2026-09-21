@@ -10,6 +10,14 @@ from .units import (ARMY_CAP_DEFAULT, BUILDING, HARVEST_RADIUS, UNIT,
 
 MAX_PLAYERS = 4
 
+#: The Swarm's player id in Holdout, outside the range the lobby hands out.
+#:
+#: It lives here rather than in waves.py because pruning has to know about it:
+#: a player with no Command Post is eliminated and takes its whole force with
+#: it, and the Swarm has never had one. Defined next to the rule it is an
+#: exception to.
+SWARM_PID = MAX_PLAYERS + 5
+
 
 @dataclass
 class Unit:
@@ -171,6 +179,16 @@ class MatchState:
         #: pact is announced rather than instant, so nobody is knifed in the
         #: same breath they were offered peace -- you get one turn to brace.
         self.breaking: set = set()
+
+        # -- Holdout ------------------------------------------------------
+        #: "war" or "holdout", taken from the map rather than the lobby so the
+        #: rules and the terrain can never disagree.
+        self.mode = tilemap.info.mode
+        #: The whole wave schedule, fixed at kickoff and public: a family gets
+        #: better at a tower defence by learning what is coming.
+        self.waves: list = []
+        #: How many waves have walked in. The index of the next one.
+        self.wave_at: int = 0
 
     # -- spawning ----------------------------------------------------------
     def add_unit(self, owner: int, code: str, x: int, y: int) -> Unit:
@@ -378,6 +396,8 @@ class MatchState:
         self.units = {k: u for k, u in self.units.items() if u.alive}
         self.buildings = {k: b for k, b in self.buildings.items() if b.alive}
         for player in self.players.values():
+            if player.pid == SWARM_PID:
+                continue              # the Swarm has no base to lose
             if player.alive and not self.has_base(player.pid):
                 player.alive = False
 

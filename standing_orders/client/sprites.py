@@ -119,8 +119,27 @@ WORKER = [
     "............",
 ]
 
+# A mortar team: a short tube cocked up and back over a baseplate, with a
+# loader crouched beside it. Drawn low and wide so it never reads as infantry
+# -- this is the thing you are meant to notice is out of position.
+MORTAR = [
+    "............",
+    ".........##.",
+    "........#66#",
+    "........#44#",
+    ".......#44#.",
+    "......#44#..",
+    "..##.#44#...",
+    ".#22##4#....",
+    ".#1111#.....",
+    ".#111111#...",
+    "..#4##4#....",
+    "...#..#.....",
+]
+
 UNIT_ART = {
     "worker": WORKER,
+    "siege": MORTAR,
     "scout": SCOUT,
     "trooper": TROOPER,
     "ranged": GUNNER,
@@ -262,8 +281,29 @@ AIRFIELD = [
     "..............",
 ]
 
+# A longbow tower: taller and thinner than the Sentry, with the arms of a
+# great bow across the top. The silhouette is the point -- at a glance you can
+# tell which of your towers can answer a Mortar.
+LONGBOW = [
+    "......##......",
+    ".....#22#.....",
+    "....#2112#....",
+    "...#4#11#4#...",
+    "..#4#2112#4#..",
+    "..#4#1111#4#..",
+    "...#466664#...",
+    "....#1111#....",
+    "....#1111#....",
+    "...##1111##...",
+    "...#454454#...",
+    "...#4#..#4#...",
+    "..#54#..#45#..",
+    "..#5#....#5#..",
+]
+
 BUILDING_ART = {
     "medic": MEDIC,
+    "longbow": LONGBOW,
     "airfield": AIRFIELD,
     "depot": DEPOT,
     "tower": TOWER,
